@@ -1,0 +1,4 @@
+order_id,waybill,receipt_date,status,warehouse
+ORD-W-204377,BD-WB-204377,2026-03-08 14:00:00,delivered,WH-BLR-01
+ORD-W-204450,BD-WB-204450,2026-03-09 10:30:00,delivered,WH-BLR-01
+ORD-W-204999,BD-WB-204999,2026-03-10 16:00:00,qc_rejected,WH-BLR-01
