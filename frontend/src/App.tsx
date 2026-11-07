@@ -1,13 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, LogOut, User as UserIcon, CheckCircle2, Database, Cpu } from 'lucide-react';
-import { api, User, RateCard } from './api/client';
+import { 
+  ShieldCheck, 
+  LogOut, 
+  User as UserIcon, 
+  Upload as UploadIcon, 
+  Layers, 
+  Database 
+} from 'lucide-react';
+import { api, User, RateCard, Source } from './api/client';
 import { SignIn } from './pages/SignIn';
+import { UploadCenter } from './pages/UploadCenter';
+import { ColumnMappingReview } from './pages/ColumnMappingReview';
 
 export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [activeTab, setActiveTab] = useState<'uploads' | 'mappings' | 'rate_cards'>('uploads');
   const [rateCards, setRateCards] = useState<RateCard[]>([]);
-  const [rateCardsLoading, setRateCardsLoading] = useState<boolean>(false);
+  const [sources, setSources] = useState<Source[]>([]);
+  const [selectedMappingSourceId, setSelectedMappingSourceId] = useState<string>('');
+  const [selectedUploadId, setSelectedUploadId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     checkSession();
@@ -17,7 +29,7 @@ export const App: React.FC = () => {
     try {
       const user = await api.getMe();
       setCurrentUser(user);
-      loadRateCards();
+      loadInitialData();
     } catch {
       setCurrentUser(null);
     } finally {
@@ -25,15 +37,19 @@ export const App: React.FC = () => {
     }
   };
 
-  const loadRateCards = async () => {
-    setRateCardsLoading(true);
+  const loadInitialData = async () => {
     try {
-      const cards = await api.listRateCards();
+      const [cards, srcList] = await Promise.all([
+        api.listRateCards(),
+        api.listSources()
+      ]);
       setRateCards(cards);
+      setSources(srcList);
+      if (srcList.length > 0 && !selectedMappingSourceId) {
+        setSelectedMappingSourceId(srcList[0].id);
+      }
     } catch (err) {
-      console.error('Failed to load rate cards', err);
-    } finally {
-      setRateCardsLoading(false);
+      console.error('Failed to load initial metadata', err);
     }
   };
 
@@ -43,6 +59,12 @@ export const App: React.FC = () => {
     } finally {
       setCurrentUser(null);
     }
+  };
+
+  const handleNavigateToMapping = (sourceId: string, uploadId?: string) => {
+    setSelectedMappingSourceId(sourceId);
+    setSelectedUploadId(uploadId);
+    setActiveTab('mappings');
   };
 
   if (loading) {
@@ -57,169 +79,157 @@ export const App: React.FC = () => {
   }
 
   if (!currentUser) {
-    return <SignIn onLoginSuccess={(user) => {
-      setCurrentUser(user);
-      loadRateCards();
-    }} />;
+    return (
+      <SignIn
+        onLoginSuccess={(user) => {
+          setCurrentUser(user);
+          loadInitialData();
+        }}
+      />
+    );
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
-      {/* Top Navigation */}
-      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+    <div className="min-h-screen bg-slate-100 text-slate-800 flex flex-col font-sans">
+      {/* Top Header */}
+      <header className="border-b border-slate-200 bg-white sticky top-0 z-50 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
-              <ShieldCheck className="w-5 h-5" />
+          <div className="flex items-center gap-8">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-sm">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <span className="text-lg font-bold tracking-tight text-slate-900 font-mono">
+                  Leak<span className="text-indigo-600">Check</span>
+                </span>
+                <span className="ml-2 px-2 py-0.5 text-[10px] font-mono rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">
+                  Phase 2 Active
+                </span>
+              </div>
             </div>
-            <div>
-              <span className="text-lg font-semibold tracking-tight text-white font-mono">
-                Leak<span className="text-sky-400">Check</span>
-              </span>
-              <span className="ml-2 px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-800 text-slate-400 border border-slate-700">
-                Phase 1 Foundation
-              </span>
-            </div>
+
+            {/* Main Tabs */}
+            <nav className="flex space-x-1">
+              <button
+                onClick={() => setActiveTab('uploads')}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
+                  activeTab === 'uploads'
+                    ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                }`}
+              >
+                <UploadIcon className="w-4 h-4" />
+                Upload Center
+              </button>
+
+              <button
+                onClick={() => setActiveTab('mappings')}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
+                  activeTab === 'mappings'
+                    ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                }`}
+              >
+                <Layers className="w-4 h-4" />
+                Column Mapping
+              </button>
+
+              <button
+                onClick={() => setActiveTab('rate_cards')}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
+                  activeTab === 'rate_cards'
+                    ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                }`}
+              >
+                <Database className="w-4 h-4" />
+                Rate Cards
+              </button>
+            </nav>
           </div>
 
+          {/* User info and Logout */}
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-xs">
-              <UserIcon className="w-3.5 h-3.5 text-slate-400" />
-              <span className="text-slate-300 font-mono">{currentUser.email}</span>
-              <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider font-semibold ${
-                currentUser.role === 'finance_exec'
-                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                  : 'bg-sky-500/10 text-sky-400 border border-sky-500/30'
-              }`}>
+            <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs">
+              <UserIcon className="w-3.5 h-3.5 text-slate-500" />
+              <span className="text-slate-700 font-mono">{currentUser.email}</span>
+              <span
+                className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider font-bold ${
+                  currentUser.role === 'finance_exec'
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                    : 'bg-indigo-100 text-indigo-800 border border-indigo-300'
+                }`}
+              >
                 {currentUser.role === 'finance_exec' ? 'Finance Exec' : 'Co-founder'}
               </span>
             </div>
 
             <button
               onClick={handleLogout}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs border border-slate-700 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 text-xs border border-slate-200 transition-colors"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>Sign Out</span>
+              Sign Out
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Welcome Banner */}
-        <div className="bg-gradient-to-r from-slate-800/80 via-slate-800/60 to-slate-900 border border-slate-700/80 rounded-xl p-6 shadow-xl mb-8">
-          <div className="flex items-start justify-between">
-            <div>
-              <h1 className="text-xl font-semibold text-white tracking-tight">
-                Foundation Verification & System Health
-              </h1>
-              <p className="mt-1 text-sm text-slate-400">
-                Core database schema, authentication, RBAC authorization, and calibrated rate cards are live.
-              </p>
-            </div>
-            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-mono font-medium">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              All Systems Operational
-            </span>
-          </div>
+      {/* Main Content Area */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
+        {activeTab === 'uploads' && (
+          <UploadCenter
+            currentUser={currentUser}
+            onNavigateToMapping={handleNavigateToMapping}
+          />
+        )}
 
-          {/* Grid of Verified Foundation Capabilities */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-            <div className="bg-slate-900/70 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center gap-2 text-sky-400 text-xs font-mono uppercase tracking-wider mb-2">
-                <Database className="w-4 h-4" />
-                <span>PostgreSQL 18 & Ledger</span>
+        {activeTab === 'mappings' && (
+          <ColumnMappingReview
+            currentUser={currentUser}
+            sourceId={selectedMappingSourceId || (sources[0]?.id || '')}
+            uploadId={selectedUploadId}
+            onBackToUploads={() => setActiveTab('uploads')}
+          />
+        )}
+
+        {activeTab === 'rate_cards' && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-200">
+              <div>
+                <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+                  <Database className="w-7 h-7 text-indigo-600" />
+                  Calibrated Rate Cards
+                </h1>
+                <p className="text-sm text-slate-600 mt-1">
+                  Half-open non-overlapping rate cards calibrated for sample orders.
+                </p>
               </div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                Relational schema with <code className="text-sky-300">btree_gist</code> date range constraints, trigger-enforced append-only ledgers, and two-phase lineage locks.
-              </p>
             </div>
 
-            <div className="bg-slate-900/70 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center gap-2 text-emerald-400 text-xs font-mono uppercase tracking-wider mb-2">
-                <ShieldCheck className="w-4 h-4" />
-                <span>API-Level RBAC</span>
-              </div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                HttpOnly SameSite=Lax session cookies, CSRF protection on state-changing endpoints, and role-based gating (<code className="text-emerald-300">finance_exec</code> vs <code className="text-sky-300">cofounder</code>).
-              </p>
-            </div>
-
-            <div className="bg-slate-900/70 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center gap-2 text-amber-400 text-xs font-mono uppercase tracking-wider mb-2">
-                <Cpu className="w-4 h-4" />
-                <span>Rate Card Engine</span>
-              </div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                Half-open <code className="text-amber-300">[)</code> date interval semantics calibrated for exact reproduction of the 3 client financial samples.
-              </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {rateCards.map((rc) => (
+                <div key={rc.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-bold text-sm uppercase text-slate-900 font-mono">
+                      {rc.partner_id} • {rc.channel}
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                      Active
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-500 font-mono mb-3">
+                    Valid: {rc.valid_from} to {rc.valid_until || 'ongoing'}
+                  </div>
+                  <pre className="text-[11px] bg-slate-50 p-2.5 rounded border border-slate-200 overflow-x-auto font-mono text-slate-800">
+                    {JSON.stringify(rc.params_json, null, 2)}
+                  </pre>
+                </div>
+              ))}
             </div>
           </div>
-        </div>
-
-        {/* Live Seeded Rate Cards Display */}
-        <div className="bg-slate-800/80 border border-slate-700/80 rounded-xl overflow-hidden shadow-xl">
-          <div className="px-6 py-4 border-b border-slate-700/80 flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-semibold text-white tracking-tight">
-                Seeded Contractual Rate Cards
-              </h2>
-              <p className="text-xs text-slate-400">
-                Contractual parameters calibrated for exact client samples (Section 9.8)
-              </p>
-            </div>
-            <span className="text-xs font-mono text-slate-400">
-              {rateCards.length} Active Cards Loaded
-            </span>
-          </div>
-
-          {rateCardsLoading ? (
-            <div className="p-8 text-center text-xs font-mono text-slate-400">
-              Loading rate cards...
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-900/80 text-slate-400 font-mono uppercase tracking-wider text-[11px] border-b border-slate-700/60">
-                  <tr>
-                    <th className="py-3 px-6">Partner</th>
-                    <th className="py-3 px-6">Channel</th>
-                    <th className="py-3 px-6">Rule Type</th>
-                    <th className="py-3 px-6">Effective Window</th>
-                    <th className="py-3 px-6">Parameters & Tariff Summary</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-700/60 text-slate-300">
-                  {rateCards.map((card) => (
-                    <tr key={card.id} className="hover:bg-slate-700/30 transition-colors">
-                      <td className="py-3.5 px-6 font-mono font-medium text-white">
-                        {card.partner_id}
-                      </td>
-                      <td className="py-3.5 px-6">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider bg-slate-900 border border-slate-700 text-slate-300">
-                          {card.channel}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-6 font-mono text-sky-400">
-                        {card.rule_type}
-                      </td>
-                      <td className="py-3.5 px-6 font-mono text-[11px] text-slate-400">
-                        [{card.valid_from} &rarr; {card.valid_until || '&infin;'})
-                      </td>
-                      <td className="py-3.5 px-6">
-                        <div className="font-mono text-[11px] text-slate-300 bg-slate-900/60 p-2 rounded border border-slate-800">
-                          {JSON.stringify(card.params_json)}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        )}
       </main>
     </div>
   );

@@ -24,6 +24,71 @@ export interface RateCard {
   created_at: string;
 }
 
+export interface Source {
+  id: string;
+  partner_id: string;
+  source_type: 'orders' | 'settlement' | 'cod' | 'freight' | 'receipts';
+  name: string;
+  file_format: string;
+  is_active: boolean;
+}
+
+export interface Upload {
+  id: string;
+  source_id: string;
+  partner_id: string;
+  source_type: string;
+  file_name: string;
+  file_hash: string;
+  file_size_bytes: number;
+  row_count: number;
+  mapping_version: number | null;
+  processing_status: 'uploaded' | 'mapping_pending' | 'processing' | 'completed' | 'failed';
+  error_count: number;
+  uploaded_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UploadPreview {
+  type: 'preview' | 'completed';
+  upload_id: string;
+  file_name: string;
+  source_type: string;
+  total_rows: number;
+  detected_columns: string[];
+  dropped_pii_columns: string[];
+  preview_rows: Record<string, any>[];
+  suggested_mapping: Record<string, { column: string | null; confidence: number; match_type: string }>;
+  missing_required: string[];
+  canonical_fields: { key: string; display_name: string; required_for: string[]; description: string }[];
+  upload: Upload;
+  summary?: any;
+}
+
+export interface UploadRowError {
+  id: string;
+  upload_id: string;
+  source_row_number: number;
+  error_code: string;
+  error_message: string;
+  raw_record: Record<string, any>;
+  created_at: string;
+}
+
+export interface ColumnMapping {
+  id: string;
+  source_id: string;
+  version: number;
+  mapping_json: Record<string, string>;
+  status: 'suggested' | 'approved' | 'superseded' | 'rolled_back';
+  created_by: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  rolled_back_at: string | null;
+  created_at: string;
+}
+
 function getCsrfTokenFromCookie(): string | null {
   const match = document.cookie.match(new RegExp('(^| )csrf_token=([^;]+)'));
   return match ? decodeURIComponent(match[2]) : null;
@@ -92,13 +157,51 @@ export const api = {
     return apiRequest<RateCard[]>(`/api/v1/rate-cards/?${params.toString()}`);
   },
 
-  lookupRateCard: (partnerId: string, channel: string, ruleType: string, targetDate: string) => {
-    const params = new URLSearchParams({
-      partner_id: partnerId,
-      channel,
-      rule_type: ruleType,
-      target_date: targetDate,
-    });
-    return apiRequest<RateCard>(`/api/v1/rate-cards/lookup?${params.toString()}`);
-  },
+  // Sources
+  listSources: () => apiRequest<Source[]>('/api/v1/sources/'),
+
+  // Uploads
+  uploadFile: (formData: FormData) =>
+    apiRequest<UploadPreview>('/api/v1/uploads/', {
+      method: 'POST',
+      body: formData,
+    }),
+
+  listUploads: (skip = 0, limit = 100) =>
+    apiRequest<Upload[]>(`/api/v1/uploads/?skip=${skip}&limit=${limit}`),
+
+  getUpload: (uploadId: string) =>
+    apiRequest<Upload>(`/api/v1/uploads/${uploadId}`),
+
+  getUploadErrors: (uploadId: string) =>
+    apiRequest<UploadRowError[]>(`/api/v1/uploads/${uploadId}/errors`),
+
+  processPendingUpload: (uploadId: string) =>
+    apiRequest<{ status: string; upload: Upload; summary: any }>(`/api/v1/uploads/${uploadId}/process`, {
+      method: 'POST',
+    }),
+
+  // Column Mappings
+  suggestMapping: (sourceId: string, sourceColumns: string[]) =>
+    apiRequest<any>('/api/v1/mappings/suggest', {
+      method: 'POST',
+      body: JSON.stringify({ source_id: sourceId, source_columns: sourceColumns }),
+    }),
+
+  approveMapping: (sourceId: string, mappingJson: Record<string, string>) =>
+    apiRequest<ColumnMapping>('/api/v1/mappings/approve', {
+      method: 'POST',
+      body: JSON.stringify({ source_id: sourceId, mapping_json: mappingJson }),
+    }),
+
+  getActiveMapping: (sourceId: string) =>
+    apiRequest<ColumnMapping>(`/api/v1/mappings/source/${sourceId}`),
+
+  getMappingVersions: (sourceId: string) =>
+    apiRequest<ColumnMapping[]>(`/api/v1/mappings/source/${sourceId}/versions`),
+
+  rollbackMapping: (mappingId: string) =>
+    apiRequest<ColumnMapping>(`/api/v1/mappings/${mappingId}/rollback`, {
+      method: 'POST',
+    }),
 };

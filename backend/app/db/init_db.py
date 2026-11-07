@@ -49,6 +49,23 @@ CREATE TRIGGER trg_courier_rules_immutable
 BEFORE UPDATE OR DELETE ON courier_tracking_rules
 FOR EACH ROW EXECUTE FUNCTION trg_enforce_tracking_rule_immutability();
 
+-- 3b. Trigger: Column Mapping Immutability once approved
+CREATE OR REPLACE FUNCTION trg_enforce_column_mapping_immutability()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.status = 'approved' AND (NEW.mapping_json IS DISTINCT FROM OLD.mapping_json OR NEW.version IS DISTINCT FROM OLD.version) THEN
+        RAISE EXCEPTION 'Approved column mapping version % is immutable. Create version % instead.',
+            OLD.version, (OLD.version + 1);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_column_mappings_immutable ON column_mappings;
+CREATE TRIGGER trg_column_mappings_immutable
+BEFORE UPDATE ON column_mappings
+FOR EACH ROW EXECUTE FUNCTION trg_enforce_column_mapping_immutability();
+
 -- 4. Trigger: Phase A (BEFORE INSERT) on order_events - Lineage Locking & Integrity Validation
 CREATE OR REPLACE FUNCTION trg_order_events_before_insert()
 RETURNS TRIGGER 

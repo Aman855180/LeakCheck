@@ -10,6 +10,12 @@ from app.models.tracking_rule import (
     CourierRuleActivationHistory
 )
 from app.models.order_event import OrderEvent, EventLineageLock
+from app.models.upload import Upload
+from app.models.column_mapping import ColumnMapping
+from app.models.job import Job
+from app.models.upload_row_error import UploadRowError
+from app.models.warehouse_receipt import WarehouseReceipt
+from app.models.tracking_event import TrackingEvent
 
 __all__ = [
     "Base",
@@ -23,4 +29,10 @@ __all__ = [
     "CourierRuleActivationHistory",
     "OrderEvent",
     "EventLineageLock",
+    "Upload",
+    "ColumnMapping",
+    "Job",
+    "UploadRowError",
+    "WarehouseReceipt",
+    "TrackingEvent",
 ]
