@@ -78,7 +78,7 @@ def test_full_return_with_full_refund_exposure(db_session):
     Warehouse scan missing.
     Expected: return_loss = ₹1,000, Money at Risk = ₹1,000.
     """
-    order_id = "ORD-RET-FULL-01"
+    order_id = f"ORD-RET-FULL-01-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
     upload = create_missing_return_base(db_session, order_id, Decimal("1000.00"), order_dt)
 
@@ -119,7 +119,7 @@ def test_partial_refund_exposure(db_session):
     Order value: ₹1,000. Only ₹400 refunded.
     Expected: return_loss = ₹400, Money at Risk = ₹400.
     """
-    order_id = "ORD-RET-PARTIAL-02"
+    order_id = f"ORD-RET-PARTIAL-02-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
     upload = create_missing_return_base(db_session, order_id, Decimal("1000.00"), order_dt)
 
@@ -157,7 +157,7 @@ def test_return_without_sufficient_financial_evidence(db_session):
     Warehouse receipt is missing, but no refund/reversal has been deducted by partner yet.
     Expected: return_loss = ₹0.00 (no speculative leakage).
     """
-    order_id = "ORD-RET-NO-REFUND-03"
+    order_id = f"ORD-RET-NO-REFUND-03-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
     # Only base order and RTO scan, NO refund event
     create_missing_return_base(db_session, order_id, Decimal("1000.00"), order_dt)
@@ -180,7 +180,7 @@ def test_return_loss_overlapping_settlement_shortfall(db_session):
     The refund caused raw settlement gap of ₹1,000.
     Overlap must be deducted from settlement gap so total risk is strictly ₹1,000 (not double counted as ₹2,000).
     """
-    order_id = "ORD-RET-OVERLAP-04"
+    order_id = f"ORD-RET-OVERLAP-04-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
     upload = create_missing_return_base(db_session, order_id, Decimal("1000.00"), order_dt)
 
@@ -231,7 +231,7 @@ def test_return_exposure_exceeding_order_value(db_session):
     Order value: ₹1,000. Errant reversal: ₹1,200.
     Expected: return_loss capped at ₹1,000, cap_applied = True.
     """
-    order_id = "ORD-RET-EXCEED-05"
+    order_id = f"ORD-RET-EXCEED-05-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
     upload = create_missing_return_base(db_session, order_id, Decimal("1000.00"), order_dt)
 
@@ -273,7 +273,7 @@ def test_return_loss_with_unrelated_settlement_shortfall(db_session):
     Refund exposure: ₹400.
     Total Money at Risk must equal ₹100 (unrelated shortfall) + ₹400 (return loss) = ₹500.
     """
-    order_id = "ORD-RET-UNRELATED-06"
+    order_id = f"ORD-RET-UNRELATED-06-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
     upload = create_missing_return_base(db_session, order_id, Decimal("1000.00"), order_dt)
 
