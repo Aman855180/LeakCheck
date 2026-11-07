@@ -278,3 +278,100 @@ def test_dashboard_metrics_aggregation(client, db_session, finance_exec_cookies,
         headers=cofounder_headers
     )
     assert res_co.status_code == 200
+
+
+def test_claims_export_csv_sanitization_and_negative_numbers():
+    from app.api.v1.claims import sanitize_csv_cell
+    # 1. Legitimate negative and positive numeric values must NOT be escaped
+    assert sanitize_csv_cell(-150.00) == "-150.0"
+    assert sanitize_csv_cell(Decimal("-250.75")) == "-250.75"
+    assert sanitize_csv_cell("-123.45") == "-123.45"
+    assert sanitize_csv_cell("+456.78") == "+456.78"
+    assert sanitize_csv_cell(0) == "0"
+    assert sanitize_csv_cell(Decimal("0.00")) == "0.00"
+
+    # 2. Formula injection triggers must be escaped with a single quote
+    assert sanitize_csv_cell("=1+1") == "'=1+1"
+    assert sanitize_csv_cell("=cmd|' /C calc'!A0") == "'=cmd|' /C calc'!A0"
+    assert sanitize_csv_cell("@SUM(1,2)") == "'@SUM(1,2)"
+    assert sanitize_csv_cell("+cmd|calc") == "'+cmd|calc"
+    assert sanitize_csv_cell("-cmd|calc") == "'-cmd|calc"
+    assert sanitize_csv_cell("\tmalicious_tab") == "'\tmalicious_tab"
+    assert sanitize_csv_cell("\rmalicious_cr") == "'\rmalicious_cr"
+
+    # 3. Safe text remains unescaped
+    assert sanitize_csv_cell("ORD-12345") == "ORD-12345"
+    assert sanitize_csv_cell("amazon") == "amazon"
+    assert sanitize_csv_cell("") == ""
+    assert sanitize_csv_cell(None) == ""
+
+
+def test_recovery_lifecycle_corrections_and_recovered_at(client, db_session, finance_exec_cookies, finance_exec_headers):
+    suffix = uuid.uuid4().hex[:6]
+    order_id = f"ORD-REC-{suffix}"
+
+    recon = OrderRecon(
+        external_order_id=order_id,
+        order_id=order_id,
+        partner_id="myntra",
+        channel="marketplace",
+        payment_mode="PREPAID",
+        order_date=datetime(2026, 10, 18, tzinfo=timezone.utc),
+        order_value=Decimal("800.00"),
+        expected_amount=Decimal("700.00"),
+        received_amount=Decimal("500.00"),
+        difference=Decimal("-200.00"),
+        status="short_paid",
+        reason_codes=["settlement_shortfall"],
+        money_at_risk=Decimal("200.00"),
+        settlement_gap_component=Decimal("200.00")
+    )
+    db_session.add(recon)
+    db_session.commit()
+
+    claims_gen = ClaimsGenerator(db_session)
+    generated = claims_gen.generate_draft_claims(order_ids=[order_id])
+    assert len(generated) == 1
+    claim = generated[0]
+    claim_id = str(claim.id)
+
+    # 1. Record Partial Recovery (₹100) -> status in_review, recovered_at set
+    res1 = client.patch(
+        f"/api/v1/claims/{claim_id}",
+        json={"recovered_amount": 100.00, "claim_status": "in_review"},
+        cookies=finance_exec_cookies,
+        headers=finance_exec_headers
+    )
+    assert res1.status_code == 200
+    c1 = res1.json()
+    assert c1["recovered_amount"] == "100.00"
+    assert c1["recovered_at"] is not None
+    original_recovered_at = c1["recovered_at"]
+
+    # 2. Correction: Finance executive corrects recovered amount down to 0 (erroneous entry)
+    res2 = client.patch(
+        f"/api/v1/claims/{claim_id}",
+        json={"recovered_amount": 0.00, "claim_status": "submitted"},
+        cookies=finance_exec_cookies,
+        headers=finance_exec_headers
+    )
+    assert res2.status_code == 200
+    c2 = res2.json()
+    assert c2["recovered_amount"] == "0.00"
+    assert c2["recovered_at"] is None  # cleared on 0 recovery
+    assert c2["claim_status"] == "submitted"
+
+    # 3. Explicit recovery timestamp with full recovery
+    explicit_date = "2026-11-05T14:30:00Z"
+    res3 = client.patch(
+        f"/api/v1/claims/{claim_id}",
+        json={"recovered_amount": 200.00, "recovered_at": explicit_date},
+        cookies=finance_exec_cookies,
+        headers=finance_exec_headers
+    )
+    assert res3.status_code == 200
+    c3 = res3.json()
+    assert c3["recovered_amount"] == "200.00"
+    assert c3["claim_status"] == "recovered"
+    assert "2026-11-05" in c3["recovered_at"]
+

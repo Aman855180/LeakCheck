@@ -198,9 +198,22 @@ def get_claims_summary(
 def sanitize_csv_cell(val: Any) -> str:
     """
     Prevents CSV injection attacks (CWE-1236) by escaping leading formula triggers.
+    Preserves legitimate negative and positive numeric financial values.
     """
-    s = str(val) if val is not None else ""
-    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+    if val is None:
+        return ""
+    if isinstance(val, (int, float, Decimal)):
+        return str(val)
+    s = str(val)
+    if not s:
+        return ""
+    # Check if string represents a pure numeric literal (e.g. -123.45, +123.45, 0.00)
+    try:
+        Decimal(s.strip())
+        return s
+    except Exception:
+        pass
+    if s[0] in ("=", "+", "-", "@", "\t", "\r"):
         return f"'{s}"
     return s
 
