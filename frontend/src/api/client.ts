@@ -128,6 +128,34 @@ export interface OrderRecon {
   computed_at: string;
 }
 
+export interface PaginatedOrderRecon {
+  items: OrderRecon[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
+export interface TimelineEventItem {
+  id: string;
+  feed_type: 'orders' | 'settlement' | 'cod' | 'freight' | 'tracking' | 'warehouse' | 'reversal';
+  event_type: string;
+  event_timestamp: string;
+  source_partner_id: string;
+  amount: string | null;
+  transaction_reference: string | null;
+  status: string | null;
+  details: Record<string, any>;
+}
+
+export interface OrderTimelineResponse {
+  order_id: string;
+  external_order_id: string;
+  partner_id: string;
+  total_events: number;
+  timeline: TimelineEventItem[];
+}
+
 export interface ReconSummary {
   as_of: string;
   total_orders: number;
@@ -280,20 +308,47 @@ export const api = {
     status?: string;
     partner_id?: string;
     has_risk?: boolean;
+    search?: string;
+    start_date?: string;
+    end_date?: string;
+    reason_code?: string;
+    age_bucket?: string;
+    sort_by?: string;
+    sort_dir?: 'asc' | 'desc';
+    page?: number;
+    page_size?: number;
     skip?: number;
     limit?: number;
+    envelope?: boolean;
   }) => {
     const q = new URLSearchParams();
     if (params?.status) q.set('status', params.status);
     if (params?.partner_id) q.set('partner_id', params.partner_id);
     if (params?.has_risk !== undefined) q.set('has_risk', String(params.has_risk));
+    if (params?.search) q.set('search', params.search);
+    if (params?.start_date) q.set('start_date', params.start_date);
+    if (params?.end_date) q.set('end_date', params.end_date);
+    if (params?.reason_code) q.set('reason_code', params.reason_code);
+    if (params?.age_bucket) q.set('age_bucket', params.age_bucket);
+    if (params?.sort_by) q.set('sort_by', params.sort_by);
+    if (params?.sort_dir) q.set('sort_dir', params.sort_dir);
+    if (params?.page !== undefined) q.set('page', String(params.page));
+    if (params?.page_size !== undefined) q.set('page_size', String(params.page_size));
     if (params?.skip !== undefined) q.set('skip', String(params.skip));
     if (params?.limit !== undefined) q.set('limit', String(params.limit));
-    return apiRequest<OrderRecon[]>(`/api/v1/recon/orders?${q.toString()}`);
+    if (params?.envelope !== undefined) q.set('envelope', String(params.envelope));
+    return apiRequest<any>(`/api/v1/recon/orders?${q.toString()}`);
   },
 
-  getReconOrderDetail: (orderId: string) =>
-    apiRequest<OrderRecon>(`/api/v1/recon/orders/${encodeURIComponent(orderId)}`),
+  getReconOrderDetail: (orderId: string, partnerId?: string) => {
+    const q = partnerId ? `?partner_id=${encodeURIComponent(partnerId)}` : '';
+    return apiRequest<OrderRecon>(`/api/v1/recon/orders/${encodeURIComponent(orderId)}${q}`);
+  },
+
+  getOrderTimeline: (orderId: string, partnerId?: string) => {
+    const q = partnerId ? `?partner_id=${encodeURIComponent(partnerId)}` : '';
+    return apiRequest<OrderTimelineResponse>(`/api/v1/recon/orders/${encodeURIComponent(orderId)}/timeline${q}`);
+  },
 
   getReconSummary: () =>
     apiRequest<ReconSummary>('/api/v1/recon/summary'),

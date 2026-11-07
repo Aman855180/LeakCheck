@@ -51,6 +51,34 @@ class OrderReconResponse(BaseModel):
     computed_at: datetime
 
 
+class PaginatedOrderReconResponse(BaseModel):
+    items: List[OrderReconResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class TimelineEventItem(BaseModel):
+    id: str
+    feed_type: str  # 'orders' | 'settlement' | 'cod' | 'freight' | 'tracking' | 'warehouse' | 'reversal'
+    event_type: str
+    event_timestamp: datetime
+    source_partner_id: str
+    amount: Optional[Decimal] = None
+    transaction_reference: Optional[str] = None
+    status: Optional[str] = None
+    details: Dict[str, Any] = {}
+
+
+class OrderTimelineResponse(BaseModel):
+    order_id: str
+    external_order_id: str
+    partner_id: str
+    total_events: int
+    timeline: List[TimelineEventItem]
+
+
 class ReconSummaryResponse(BaseModel):
     as_of: str
     total_orders: int
