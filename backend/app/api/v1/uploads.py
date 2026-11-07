@@ -1,6 +1,8 @@
+import os
 import uuid
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import select, desc
 
@@ -24,6 +26,23 @@ router = APIRouter(prefix="/uploads", tags=["Uploads"])
 
 # In-memory storage for raw preview contents of pending uploads
 _PENDING_FILE_CACHE: Dict[str, bytes] = {}
+
+SAMPLE_FILES_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "sample_files")
+)
+
+
+@router.get("/sample-file/{filename}")
+def get_sample_file(
+    filename: str,
+    current_user: User = Depends(require_role(["finance_exec", "cofounder"]))
+):
+    """Retrieve sample test CSV file for quick testing in UI."""
+    safe_name = os.path.basename(filename)
+    file_path = os.path.join(SAMPLE_FILES_DIR, safe_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Sample file {safe_name} not found")
+    return FileResponse(file_path, media_type="text/csv", filename=safe_name)
 
 
 @router.post("/", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)

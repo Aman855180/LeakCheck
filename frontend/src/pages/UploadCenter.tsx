@@ -28,6 +28,7 @@ export const UploadCenter: React.FC<UploadCenterProps> = ({ currentUser, onNavig
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isLoadingSample, setIsLoadingSample] = useState(false);
 
   // Errors modal state
   const [selectedUploadForErrors, setSelectedUploadForErrors] = useState<Upload | null>(null);
@@ -35,6 +36,37 @@ export const UploadCenter: React.FC<UploadCenterProps> = ({ currentUser, onNavig
   const [isLoadingErrors, setIsLoadingErrors] = useState(false);
 
   const isCoFounder = currentUser.role === 'cofounder';
+
+  const selectedSource = sources.find((s) => s.id === selectedSourceId);
+
+  const getSampleFileNameForSource = (src?: Source | null): string => {
+    if (!src) return '01_shopify_orders.csv';
+    if (src.partner_id === 'shopify' && src.source_type === 'orders') return '01_shopify_orders.csv';
+    if (src.partner_id === 'amazon' && src.source_type === 'settlement') return '02_amazon_settlement.csv';
+    if (src.partner_id === 'delhivery' && src.source_type === 'cod') return '03_delhivery_cod_remittance.csv';
+    if (src.partner_id === 'bluedart' && src.source_type === 'freight') return '04_bluedart_freight_invoice.csv';
+    if (src.partner_id === 'blr_warehouse' && src.source_type === 'receipts') return '05_blr_warehouse_receipts.csv';
+    if (src.source_type === 'orders') return '01_shopify_orders.csv';
+    if (src.source_type === 'settlement') return '02_amazon_settlement.csv';
+    if (src.source_type === 'cod') return '03_delhivery_cod_remittance.csv';
+    if (src.source_type === 'freight') return '04_bluedart_freight_invoice.csv';
+    return '05_blr_warehouse_receipts.csv';
+  };
+
+  const handleAutoLoadSample = async () => {
+    const sampleName = getSampleFileNameForSource(selectedSource);
+    setIsLoadingSample(true);
+    setUploadError(null);
+    try {
+      const file = await api.fetchSampleFile(sampleName);
+      setSelectedFile(file);
+      setUploadSuccess(`Loaded sample file '${sampleName}' (${(file.size / 1024).toFixed(1)} KB). Click 'Upload Statement' below to proceed.`);
+    } catch (err: any) {
+      setUploadError(`Failed to load sample: ${err.message}`);
+    } finally {
+      setIsLoadingSample(false);
+    }
+  };
 
   useEffect(() => {
     loadSources();
@@ -250,35 +282,86 @@ export const UploadCenter: React.FC<UploadCenterProps> = ({ currentUser, onNavig
 
             {/* File Dropzone */}
             <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Statement File (.csv, .xlsx) <span className="text-rose-500">*</span>
-              </label>
-              <div className="relative border-2 border-dashed border-slate-300 rounded-lg p-4 text-center hover:border-indigo-400 transition-colors bg-slate-50">
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-sm font-semibold text-slate-700">
+                  Statement File (.csv, .xlsx) <span className="text-rose-500">*</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={handleAutoLoadSample}
+                  disabled={isCoFounder || isUploading || isLoadingSample}
+                  className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold inline-flex items-center gap-1 bg-indigo-50 px-2.5 py-1 rounded border border-indigo-200 hover:bg-indigo-100 transition-colors"
+                >
+                  {isLoadingSample ? (
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <span>⚡ Auto-fill Sample ({getSampleFileNameForSource(selectedSource)})</span>
+                  )}
+                </button>
+              </div>
+
+              <div className={`relative border-2 border-dashed rounded-lg p-5 text-center transition-colors ${
+                selectedFile 
+                  ? 'border-emerald-400 bg-emerald-50/60' 
+                  : 'border-slate-300 bg-slate-50 hover:border-indigo-400'
+              }`}>
                 <input
                   type="file"
                   accept=".csv,.xlsx,.xls"
                   onChange={handleFileChange}
                   disabled={isCoFounder || isUploading}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
                 />
-                <div className="flex flex-col items-center justify-center space-y-1">
-                  <UploadIcon className="w-6 h-6 text-slate-400" />
-                  <p className="text-sm font-medium text-slate-700">
-                    {selectedFile ? selectedFile.name : 'Choose a file or drag & drop here'}
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    Max 25 MB • Up to 150,000 rows • CSV or XLSX
-                  </p>
+                <div className="flex flex-col items-center justify-center space-y-1.5 pointer-events-none">
+                  {selectedFile ? (
+                    <>
+                      <CheckCircle2 className="w-7 h-7 text-emerald-600" />
+                      <p className="text-sm font-bold text-emerald-900">
+                        {selectedFile.name}
+                      </p>
+                      <p className="text-xs text-emerald-700 font-mono">
+                        {(selectedFile.size / 1024).toFixed(1)} KB • Attached & Ready to Ingest
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <UploadIcon className="w-7 h-7 text-slate-400" />
+                      <p className="text-sm font-semibold text-slate-700">
+                        Click to browse file or drag & drop here
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Max 25 MB • CSV or XLSX • PII auto-stripped
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="flex justify-end pt-2">
+          <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+            <div className="text-xs text-slate-500">
+              {!selectedFile ? (
+                <span className="text-amber-700 font-medium flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  Please select or auto-fill a file to enable upload.
+                </span>
+              ) : (
+                <span className="text-emerald-700 font-medium flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  File ready for ingestion.
+                </span>
+              )}
+            </div>
+
             <button
               type="submit"
               disabled={isCoFounder || isUploading || !selectedFile}
-              className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-indigo-600 text-white font-medium hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+              className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-semibold text-sm shadow-sm transition-all ${
+                !selectedFile || isCoFounder || isUploading
+                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md cursor-pointer'
+              }`}
             >
               {isUploading ? (
                 <>

@@ -176,6 +176,17 @@ export const api = {
   getUploadErrors: (uploadId: string) =>
     apiRequest<UploadRowError[]>(`/api/v1/uploads/${uploadId}/errors`),
 
+  fetchSampleFile: async (filename: string): Promise<File> => {
+    const res = await fetch(`/api/v1/uploads/sample-file/${filename}`, {
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to load sample file: ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    return new File([blob], filename, { type: 'text/csv' });
+  },
+
   processPendingUpload: (uploadId: string) =>
     apiRequest<{ status: string; upload: Upload; summary: any }>(`/api/v1/uploads/${uploadId}/process`, {
       method: 'POST',
