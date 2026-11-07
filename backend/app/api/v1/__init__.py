@@ -6,6 +6,8 @@ from app.api.v1.uploads import router as uploads_router
 from app.api.v1.mappings import router as mappings_router
 from app.api.v1.sources import router as sources_router
 from app.api.v1.recon import router as recon_router
+from app.api.v1.claims import router as claims_router
+from app.api.v1.dashboard import router as dashboard_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
@@ -15,3 +17,5 @@ api_router.include_router(uploads_router)
 api_router.include_router(mappings_router)
 api_router.include_router(sources_router)
 api_router.include_router(recon_router)
+api_router.include_router(claims_router)
+api_router.include_router(dashboard_router)

@@ -170,6 +170,67 @@ export interface ReconSummary {
   partner_risk_breakdown: Record<string, string>;
 }
 
+export interface Claim {
+  id: string;
+  order_recon_id: string;
+  external_order_id: string;
+  order_id: string;
+  partner_id: string;
+  claim_amount: string;
+  recovered_amount: string;
+  recovered_at: string | null;
+  claim_reason: string;
+  evidence_json: Record<string, any>;
+  claim_status: 'draft' | 'submitted' | 'in_review' | 'approved' | 'rejected' | 'recovered';
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ClaimDetail extends Claim {
+  order?: OrderRecon;
+}
+
+export interface PaginatedClaims {
+  items: Claim[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
+export interface ClaimsSummary {
+  total_claims: number;
+  total_claim_amount: string;
+  total_recovered_amount: string;
+  total_outstanding_amount: string;
+  status_counts: Record<string, number>;
+  recovery_rate_pct: string;
+  partner_claims_summary: Record<string, {
+    total_claims: number;
+    claimed_amount: string;
+    recovered_amount: string;
+    outstanding_amount: string;
+  }>;
+}
+
+export interface DashboardMetrics {
+  as_of: string;
+  total_orders: number;
+  total_money_at_risk: string;
+  total_settlement_gap: string;
+  total_freight_excess: string;
+  total_return_loss: string;
+  status_counts: Record<string, number>;
+  age_bucket_counts: Record<string, number>;
+  age_bucket_risk: Record<string, string>;
+  partner_risk_breakdown: Record<string, string>;
+  partner_order_counts: Record<string, number>;
+  reason_code_risk_breakdown: Record<string, string>;
+  reason_code_counts: Record<string, number>;
+  claims_summary: ClaimsSummary;
+}
+
 function getCsrfTokenFromCookie(): string | null {
   const match = document.cookie.match(new RegExp('(^| )csrf_token=([^;]+)'));
   return match ? decodeURIComponent(match[2]) : null;
@@ -352,4 +413,59 @@ export const api = {
 
   getReconSummary: () =>
     apiRequest<ReconSummary>('/api/v1/recon/summary'),
+
+  // Claims Management
+  listClaims: (params?: {
+    search?: string;
+    partner_id?: string;
+    claim_reason?: string;
+    claim_status?: string;
+    min_amount?: number;
+    max_amount?: number;
+    sort_by?: string;
+    sort_dir?: 'asc' | 'desc';
+    page?: number;
+    page_size?: number;
+    envelope?: boolean;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.search) q.set('search', params.search);
+    if (params?.partner_id) q.set('partner_id', params.partner_id);
+    if (params?.claim_reason) q.set('claim_reason', params.claim_reason);
+    if (params?.claim_status) q.set('claim_status', params.claim_status);
+    if (params?.min_amount !== undefined) q.set('min_amount', String(params.min_amount));
+    if (params?.max_amount !== undefined) q.set('max_amount', String(params.max_amount));
+    if (params?.sort_by) q.set('sort_by', params.sort_by);
+    if (params?.sort_dir) q.set('sort_dir', params.sort_dir);
+    if (params?.page !== undefined) q.set('page', String(params.page));
+    if (params?.page_size !== undefined) q.set('page_size', String(params.page_size));
+    if (params?.envelope !== undefined) q.set('envelope', String(params.envelope));
+    return apiRequest<any>(`/api/v1/claims/?${q.toString()}`);
+  },
+
+  getClaimDetail: (claimId: string) =>
+    apiRequest<ClaimDetail>(`/api/v1/claims/${claimId}`),
+
+  updateClaim: (claimId: string, payload: {
+    claim_status?: string;
+    notes?: string;
+    recovered_amount?: number;
+    recovered_at?: string;
+  }) =>
+    apiRequest<Claim>(`/api/v1/claims/${claimId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  generateDraftClaims: () =>
+    apiRequest<{ status: string; claims_generated_or_updated: number }>('/api/v1/claims/generate', {
+      method: 'POST',
+    }),
+
+  getClaimsSummary: () =>
+    apiRequest<ClaimsSummary>('/api/v1/claims/summary'),
+
+  // Money-at-Risk Dashboard
+  getDashboardMetrics: () =>
+    apiRequest<DashboardMetrics>('/api/v1/dashboard/metrics'),
 };

@@ -6,22 +6,28 @@ import {
   Upload as UploadIcon, 
   Layers, 
   Database,
-  Scale
+  Scale,
+  TrendingDown,
+  FileCheck2
 } from 'lucide-react';
 import { api, User, RateCard, Source } from './api/client';
 import { SignIn } from './pages/SignIn';
 import { UploadCenter } from './pages/UploadCenter';
 import { ColumnMappingReview } from './pages/ColumnMappingReview';
 import { ReconciliationHub } from './pages/ReconciliationHub';
+import { MoneyAtRiskDashboard } from './pages/MoneyAtRiskDashboard';
+import { ClaimsManagement } from './pages/ClaimsManagement';
 
 export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [activeTab, setActiveTab] = useState<'uploads' | 'mappings' | 'recon' | 'rate_cards'>('recon');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'recon' | 'claims' | 'uploads' | 'mappings' | 'rate_cards'>('dashboard');
   const [rateCards, setRateCards] = useState<RateCard[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [selectedMappingSourceId, setSelectedMappingSourceId] = useState<string>('');
   const [selectedUploadId, setSelectedUploadId] = useState<string | undefined>(undefined);
+  const [claimStatusFilter, setClaimStatusFilter] = useState<string | undefined>(undefined);
+  const [claimPartnerFilter, setClaimPartnerFilter] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     checkSession();
@@ -106,13 +112,25 @@ export const App: React.FC = () => {
                   Leak<span className="text-indigo-600">Check</span>
                 </span>
                 <span className="ml-2 px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
-                  Phase 4 Active
+                  Phase 5 Active
                 </span>
               </div>
             </div>
 
             {/* Main Tabs */}
             <nav className="flex space-x-1">
+              <button
+                onClick={() => setActiveTab('dashboard')}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
+                  activeTab === 'dashboard'
+                    ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                }`}
+              >
+                <TrendingDown className="w-4 h-4" />
+                Executive Dashboard
+              </button>
+
               <button
                 onClick={() => setActiveTab('recon')}
                 className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
@@ -122,7 +140,19 @@ export const App: React.FC = () => {
                 }`}
               >
                 <Scale className="w-4 h-4" />
-                Orders & Reconciliation
+                Orders &amp; Recon
+              </button>
+
+              <button
+                onClick={() => setActiveTab('claims')}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
+                  activeTab === 'claims'
+                    ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                }`}
+              >
+                <FileCheck2 className="w-4 h-4" />
+                Claims Management
               </button>
 
               <button
@@ -192,8 +222,28 @@ export const App: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
+        {activeTab === 'dashboard' && (
+          <MoneyAtRiskDashboard
+            currentUser={currentUser}
+            onNavigateToOrders={() => setActiveTab('recon')}
+            onNavigateToClaims={(status, partner) => {
+              setClaimStatusFilter(status);
+              setClaimPartnerFilter(partner);
+              setActiveTab('claims');
+            }}
+          />
+        )}
+
         {activeTab === 'recon' && (
           <ReconciliationHub currentUser={currentUser} />
+        )}
+
+        {activeTab === 'claims' && (
+          <ClaimsManagement
+            currentUser={currentUser}
+            initialStatusFilter={claimStatusFilter}
+            initialPartnerFilter={claimPartnerFilter}
+          />
         )}
 
         {activeTab === 'uploads' && (

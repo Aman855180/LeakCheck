@@ -15,6 +15,7 @@ class Claim(Base):
     partner_id = Column(String(64), ForeignKey("partners.id", ondelete="RESTRICT"), nullable=False, index=True)
     claim_amount = Column(Numeric(12, 2), nullable=False, default=0.00)
     recovered_amount = Column(Numeric(12, 2), nullable=False, default=0.00)
+    recovered_at = Column(DateTime(timezone=True), nullable=True)
     claim_reason = Column(String(64), nullable=False, index=True)
     evidence_json = Column(JSONB, nullable=False, default=dict)
     claim_status = Column(String(32), default="draft", nullable=False, index=True)  # 'draft', 'submitted', 'in_review', 'approved', 'rejected', 'recovered'
