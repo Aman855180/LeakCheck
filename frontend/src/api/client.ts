@@ -89,6 +89,58 @@ export interface ColumnMapping {
   created_at: string;
 }
 
+export interface OrderRecon {
+  id: string;
+  order_id: string;
+  partner_id: string;
+  channel: string;
+  payment_mode: string;
+  order_date: string;
+  order_value: string;
+  rate_card_id: string | null;
+  expected_amount: string | null;
+  received_amount: string;
+  settlement_credit: string;
+  cod_remittance: string;
+  expected_commission: string;
+  actual_commission: string;
+  expected_fixed_fee: string;
+  actual_fixed_fee: string;
+  expected_freight: string;
+  actual_freight: string;
+  expected_cod_fee: string;
+  actual_cod_fee: string;
+  tcs_amount: string;
+  tds_amount: string;
+  difference: string | null;
+  status: 'settled' | 'short_paid' | 'unpaid_past_due' | 'freight_overcharged' | 'return_not_received' | 'pending';
+  reason_codes: string[];
+  due_date: string | null;
+  age_days: number;
+  age_bucket: '0-7' | '8-15' | '16-30' | '30+';
+  money_at_risk: string;
+  settlement_gap_component: string;
+  freight_excess_component: string;
+  return_loss_component: string;
+  breakdown_json: Record<string, any>;
+  source_events_count: number;
+  computed_at: string;
+}
+
+export interface ReconSummary {
+  as_of: string;
+  total_orders: number;
+  total_money_at_risk: string;
+  settled_count: number;
+  short_paid_count: number;
+  unpaid_past_due_count: number;
+  freight_overcharged_count: number;
+  return_not_received_count: number;
+  pending_count: number;
+  age_bucket_counts: Record<string, number>;
+  partner_risk_breakdown: Record<string, string>;
+}
+
 function getCsrfTokenFromCookie(): string | null {
   const match = document.cookie.match(new RegExp('(^| )csrf_token=([^;]+)'));
   return match ? decodeURIComponent(match[2]) : null;
@@ -215,4 +267,33 @@ export const api = {
     apiRequest<ColumnMapping>(`/api/v1/mappings/${mappingId}/rollback`, {
       method: 'POST',
     }),
+
+  // Reconciliation Engine
+  triggerRecon: (asOf?: string, orderIds?: string[]) =>
+    apiRequest<any>('/api/v1/recon/run', {
+      method: 'POST',
+      body: JSON.stringify({ as_of: asOf, order_ids: orderIds }),
+    }),
+
+  listReconOrders: (params?: {
+    status?: string;
+    partner_id?: string;
+    has_risk?: boolean;
+    skip?: number;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set('status', params.status);
+    if (params?.partner_id) q.set('partner_id', params.partner_id);
+    if (params?.has_risk !== undefined) q.set('has_risk', String(params.has_risk));
+    if (params?.skip !== undefined) q.set('skip', String(params.skip));
+    if (params?.limit !== undefined) q.set('limit', String(params.limit));
+    return apiRequest<OrderRecon[]>(`/api/v1/recon/orders?${q.toString()}`);
+  },
+
+  getReconOrderDetail: (orderId: string) =>
+    apiRequest<OrderRecon>(`/api/v1/recon/orders/${encodeURIComponent(orderId)}`),
+
+  getReconSummary: () =>
+    apiRequest<ReconSummary>('/api/v1/recon/summary'),
 };

@@ -5,17 +5,19 @@ import {
   User as UserIcon, 
   Upload as UploadIcon, 
   Layers, 
-  Database 
+  Database,
+  Scale
 } from 'lucide-react';
 import { api, User, RateCard, Source } from './api/client';
 import { SignIn } from './pages/SignIn';
 import { UploadCenter } from './pages/UploadCenter';
 import { ColumnMappingReview } from './pages/ColumnMappingReview';
+import { ReconciliationHub } from './pages/ReconciliationHub';
 
 export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [activeTab, setActiveTab] = useState<'uploads' | 'mappings' | 'rate_cards'>('uploads');
+  const [activeTab, setActiveTab] = useState<'uploads' | 'mappings' | 'recon' | 'rate_cards'>('recon');
   const [rateCards, setRateCards] = useState<RateCard[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [selectedMappingSourceId, setSelectedMappingSourceId] = useState<string>('');
@@ -103,14 +105,26 @@ export const App: React.FC = () => {
                 <span className="text-lg font-bold tracking-tight text-slate-900 font-mono">
                   Leak<span className="text-indigo-600">Check</span>
                 </span>
-                <span className="ml-2 px-2 py-0.5 text-[10px] font-mono rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">
-                  Phase 2 Active
+                <span className="ml-2 px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
+                  Phase 3 Active
                 </span>
               </div>
             </div>
 
             {/* Main Tabs */}
             <nav className="flex space-x-1">
+              <button
+                onClick={() => setActiveTab('recon')}
+                className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
+                  activeTab === 'recon'
+                    ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                }`}
+              >
+                <Scale className="w-4 h-4" />
+                Reconciliation Hub
+              </button>
+
               <button
                 onClick={() => setActiveTab('uploads')}
                 className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
@@ -178,6 +192,10 @@ export const App: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
+        {activeTab === 'recon' && (
+          <ReconciliationHub currentUser={currentUser} />
+        )}
+
         {activeTab === 'uploads' && (
           <UploadCenter
             currentUser={currentUser}

@@ -16,6 +16,8 @@ from app.models.job import Job
 from app.models.upload_row_error import UploadRowError
 from app.models.warehouse_receipt import WarehouseReceipt
 from app.models.tracking_event import TrackingEvent
+from app.models.order_recon import OrderRecon
+from app.models.claim import Claim
 
 __all__ = [
     "Base",
@@ -35,4 +37,6 @@ __all__ = [
     "UploadRowError",
     "WarehouseReceipt",
     "TrackingEvent",
+    "OrderRecon",
+    "Claim",
 ]
