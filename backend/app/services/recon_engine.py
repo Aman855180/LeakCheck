@@ -153,8 +153,10 @@ class ReconciliationEngine:
         tcs_amount = Decimal("0.00")
         tds_amount = Decimal("0.00")
 
-        # Source-evidenced refund events
+        # Source-evidenced refund events and forward settlement events
         refund_events: List[OrderEvent] = []
+        forward_events: List[OrderEvent] = []
+        forward_settlement_credit = Decimal("0.00")
 
         for ev in events:
             ev_type = ev.event_type.lower()
@@ -170,13 +172,18 @@ class ReconciliationEngine:
 
                 if ev_type in ("settlement_reversal", "refund", "customer_refund") or (ev.amount < 0) or (credit_val < 0):
                     refund_events.append(ev)
+                else:
+                    forward_events.append(ev)
+                    forward_settlement_credit += quantize_amount(credit_val)
             elif "cod" in ev_type:
                 cod_remittance += quantize_amount(ev.amount)
                 actual_cod_fee += quantize_amount(ev.cod_fee)
+                forward_events.append(ev)
             elif "freight" in ev_type:
                 actual_freight += quantize_amount(ev.freight_amount if ev.freight_amount else ev.amount)
 
         received_amount = quantize_amount(settlement_credit + cod_remittance)
+        forward_received_amount = quantize_amount(forward_settlement_credit + cod_remittance)
 
         # Inspect tracking & delivery state
         latest_tracking = (
@@ -305,38 +312,51 @@ class ReconciliationEngine:
         if difference is not None and difference < -MATERIALITY_THRESHOLD:
             raw_settlement_gap = quantize_amount(expected_amount - received_amount)
 
-        # 3. Source-evidenced return loss component
+        # 3. Source-evidenced return loss and unrelated forward settlement gap components
         evidenced_refund_exposure = Decimal("0.00")
         gross_return_loss = Decimal("0.00")
         cap_applied = False
         refund_overlap_subtracted = Decimal("0.00")
         source_refund_event_ids = [str(ev.id) for ev in refund_events]
+        source_forward_event_ids = [str(ev.id) for ev in forward_events]
 
         if is_return_missing:
-            # Sum of source-evidenced refund deductions
-            total_refund_amount = sum(abs(ev.amount) for ev in refund_events)
+            # A. Calculate source-evidenced return loss strictly from refund reversal events
+            total_refund_amount = sum(
+                abs(ev.settlement_credit if ev.settlement_credit is not None and ev.settlement_credit != Decimal("0.00") else ev.amount)
+                for ev in refund_events
+            )
             evidenced_refund_exposure = quantize_amount(total_refund_amount)
 
             if evidenced_refund_exposure > Decimal("0.00"):
-                # Cap at order_value
                 if evidenced_refund_exposure > order_value:
                     gross_return_loss = order_value
                     cap_applied = True
                 else:
                     gross_return_loss = evidenced_refund_exposure
-
                 return_loss_comp = gross_return_loss
 
-        # 4. Deduplicate overlap between settlement gap and other components
-        # A. Deduct freight excess from settlement gap if freight was already deducted in settlement
-        gap_after_freight = max(raw_settlement_gap - freight_excess_comp, Decimal("0.00"))
-
-        # B. Deduct only the settlement gap attributable to the same underlying refund exposure
-        if evidenced_refund_exposure > Decimal("0.00"):
-            # The portion of the settlement gap caused by this refund deduction
-            refund_overlap_subtracted = min(gap_after_freight, evidenced_refund_exposure)
-            settlement_gap_comp = max(gap_after_freight - refund_overlap_subtracted, Decimal("0.00"))
+            # B. Attribute unrelated settlement shortfall using forward settlement events only
+            if len(forward_events) > 0:
+                forward_calc = self.rate_calculator.calculate_expected_settlement(
+                    partner_id=resolved_partner_id,
+                    channel=channel,
+                    order_date=order_date,
+                    order_value=order_value,
+                    payment_mode=payment_mode,
+                    is_returned=False
+                )
+                forward_expected = forward_calc.expected_amount
+                if forward_expected is not None and forward_received_amount < forward_expected - MATERIALITY_THRESHOLD:
+                    forward_shortfall = quantize_amount(forward_expected - forward_received_amount)
+                    settlement_gap_comp = max(forward_shortfall - freight_excess_comp, Decimal("0.00"))
+                else:
+                    settlement_gap_comp = Decimal("0.00")
+            else:
+                settlement_gap_comp = Decimal("0.00")
         else:
+            # Non-return order: settlement gap is standard net gap after freight
+            gap_after_freight = max(raw_settlement_gap - freight_excess_comp, Decimal("0.00"))
             settlement_gap_comp = gap_after_freight
 
         # Total non-overlapping exposure
@@ -380,7 +400,7 @@ class ReconciliationEngine:
                 "gross_return_loss": str(gross_return_loss),
                 "cap_applied": cap_applied,
                 "source_refund_event_ids": source_refund_event_ids,
-                "refund_overlap_subtracted_from_gap": str(refund_overlap_subtracted),
+                "source_forward_event_ids": source_forward_event_ids,
                 "unrelated_settlement_gap_retained": str(settlement_gap_comp),
                 "net_return_loss": str(return_loss_comp)
             },

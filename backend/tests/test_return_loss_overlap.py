@@ -265,53 +265,88 @@ def test_return_exposure_exceeding_order_value(db_session):
 
 def test_return_loss_with_unrelated_settlement_shortfall(db_session):
     """
-    Scenario 6: Return loss with unrelated settlement shortfall.
-    Subtract only the settlement gap amount attributable to the same refund exposure.
-    Do NOT subtract unrelated settlement shortfalls.
-    Order value: ₹1,000.
-    Unrelated settlement shortfall: ₹100.
-    Refund exposure: ₹400.
-    Total Money at Risk must equal ₹100 (unrelated shortfall) + ₹400 (return loss) = ₹500.
+    Scenario 6: Return loss with unrelated settlement shortfall (User Specification Check).
+    Demonstrates that settlement-gap overlap is deducted ONLY when it is attributable
+    to the same underlying refund events. Unrelated settlement shortfalls are never deducted.
+
+    Example:
+    - Refund exposure = ₹100.00 (from settlement_reversal event)
+    - Unrelated forward settlement shortfall = ₹50.00 (expected ₹899.00 vs received ₹849.00)
+    - Correct total Money at Risk = ₹50.00 + ₹100.00 = ₹150.00.
     """
     order_id = f"ORD-RET-UNRELATED-06-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
-    upload = create_missing_return_base(db_session, order_id, Decimal("1000.00"), order_dt)
+    upload = get_test_upload(db_session, "amazon")
+    delivery_dt = order_dt + timedelta(days=2)
 
-    # Initial settlement had a shortfall of ₹100
-    # Expected was ~₹904. Received forward was only ₹804. Shortfall = ₹100.
-    # Then refund reversal of ₹400 took place.
+    # 1. Base order placed: Amazon gross ₹1,199.00 (expected forward: ₹899.00)
+    ev_order = OrderEvent(
+        id=uuid.uuid4(),
+        lineage_root_id=uuid.uuid4(),
+        external_order_id=order_id,
+        source_partner_id="amazon",
+        event_type="order_placed",
+        amount=Decimal("1199.00"),
+        event_date=order_dt,
+        idempotency_key=str(uuid.uuid4()),
+        upload_id=upload.id,
+        raw_data={"Payment Method": "Prepaid"}
+    )
+    # 2. Tracking: RTO delivered to dock without warehouse receipt
+    trk = TrackingEvent(
+        order_id=order_id,
+        tracking_number=f"DEL-{order_id}",
+        courier_code="delhivery",
+        event_timestamp=delivery_dt,
+        raw_status_code="RTO_DELIVERED_TO_DOCK",
+        raw_telemetry={"status": "returned"},
+        verification_outcome="verified_dock_delivery",
+        upload_id=upload.id,
+        source_row_number=1
+    )
+    # 3. Forward settlement credit of ₹849.00 (expected ₹899.00 -> unrelated shortfall of ₹50.00)
     ev_forward = OrderEvent(
         id=uuid.uuid4(),
         lineage_root_id=uuid.uuid4(),
         external_order_id=order_id,
-        source_partner_id="shopify",
+        source_partner_id="amazon",
         event_type="settlement_credit",
-        amount=Decimal("404.00"), # 804 - 400 net = 404
-        settlement_credit=Decimal("404.00"),
-        event_date=order_dt + timedelta(days=2),
+        amount=Decimal("849.00"),
+        settlement_credit=Decimal("849.00"),
+        event_date=order_dt + timedelta(days=3),
         idempotency_key=str(uuid.uuid4()),
         upload_id=upload.id
     )
+    # 4. Refund reversal of ₹100.00
     ev_refund = OrderEvent(
         id=uuid.uuid4(),
         lineage_root_id=uuid.uuid4(),
         external_order_id=order_id,
-        source_partner_id="shopify",
+        source_partner_id="amazon",
         event_type="settlement_reversal",
-        amount=Decimal("-400.00"),
-        settlement_credit=Decimal("-400.00"),
+        amount=Decimal("-100.00"),
+        settlement_credit=Decimal("-100.00"),
         event_date=order_dt + timedelta(days=5),
         idempotency_key=str(uuid.uuid4()),
         upload_id=upload.id
     )
-    db_session.add(ev_forward)
-    db_session.add(ev_refund)
+    db_session.add_all([ev_order, trk, ev_forward, ev_refund])
     db_session.commit()
 
     engine = ReconciliationEngine(db_session, as_of=DEFAULT_AS_OF_DATE)
-    recon = engine.reconcile_single_order(external_order_id=order_id, partner_id="shopify")
+    recon = engine.reconcile_single_order(external_order_id=order_id, partner_id="amazon")
 
+    # Invariants verification
     assert recon.status == "return_not_received"
-    assert recon.return_loss_component == Decimal("400.00")
+    assert recon.settlement_gap_component == Decimal("50.00")
+    assert recon.return_loss_component == Decimal("100.00")
+    assert recon.money_at_risk == Decimal("150.00")
+
+    # Audit breakdown attribution
     audit = recon.breakdown_json["return_loss_breakdown"]
-    assert audit["net_return_loss"] == "400.00"
+    assert audit["is_return_missing"] is True
+    assert audit["evidenced_refund_exposure"] == "100.00"
+    assert audit["net_return_loss"] == "100.00"
+    assert audit["unrelated_settlement_gap_retained"] == "50.00"
+    assert str(ev_refund.id) in audit["source_refund_event_ids"]
+    assert str(ev_forward.id) in audit["source_forward_event_ids"]
