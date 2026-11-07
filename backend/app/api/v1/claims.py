@@ -195,6 +195,16 @@ def get_claims_summary(
     )
 
 
+def sanitize_csv_cell(val: Any) -> str:
+    """
+    Prevents CSV injection attacks (CWE-1236) by escaping leading formula triggers.
+    """
+    s = str(val) if val is not None else ""
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return f"'{s}"
+    return s
+
+
 @router.get("/export/csv")
 def export_claims_csv(
     db: Session = Depends(get_db),
@@ -203,6 +213,7 @@ def export_claims_csv(
     """
     Exports all claims and supporting financial evidence to CSV.
     Accessible to both Finance Executives and Co-founders.
+    Includes formula-injection sanitization for safe opening in Excel.
     """
     claims = (
         db.query(Claim)
@@ -236,16 +247,16 @@ def export_claims_csv(
         outstanding = quantize_amount(max(Decimal("0.00"), c.claim_amount - c.recovered_amount))
         writer.writerow([
             str(c.id),
-            c.external_order_id,
-            c.partner_id,
-            c.claim_reason,
-            c.claim_status,
+            sanitize_csv_cell(c.external_order_id),
+            sanitize_csv_cell(c.partner_id),
+            sanitize_csv_cell(c.claim_reason),
+            sanitize_csv_cell(c.claim_status),
             f"{c.claim_amount:.2f}",
             f"{c.recovered_amount:.2f}",
             f"{outstanding:.2f}",
             c.recovered_at.isoformat() if c.recovered_at else "N/A",
             c.created_at.isoformat(),
-            c.notes or "",
+            sanitize_csv_cell(c.notes or ""),
             ev.get("settlement_gap", "0.00"),
             ev.get("freight_excess", "0.00"),
             ev.get("return_loss", "0.00")

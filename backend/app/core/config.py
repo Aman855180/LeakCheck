@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # Reconciliation Defaults
     DEFAULT_AS_OF_DATE: str = Field(default="2026-11-01")
 
+    # AI Fallback (Anthropic)
+    ANTHROPIC_API_KEY: str | None = Field(default=None)
+    ANTHROPIC_MODEL: str = Field(default="claude-3-5-sonnet-20241022")
+
     @property
     def cors_origins(self) -> List[str]:
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]

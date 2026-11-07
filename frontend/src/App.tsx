@@ -112,7 +112,7 @@ export const App: React.FC = () => {
                   Leak<span className="text-indigo-600">Check</span>
                 </span>
                 <span className="ml-2 px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
-                  Phase 5 Active
+                  Phase 6 Active
                 </span>
               </div>
             </div>

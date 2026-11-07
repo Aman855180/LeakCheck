@@ -1,6 +1,7 @@
 import re
 from typing import Dict, List, Optional, Tuple, Any
 from rapidfuzz import fuzz
+from app.services.ai_column_mapper import AIFallbackMapper
 
 # 13 Canonical fields defined in the build specification
 CANONICAL_FIELDS: Dict[str, Dict[str, Any]] = {
@@ -131,7 +132,9 @@ def normalize_header(header: str) -> str:
 
 def suggest_column_mappings(
     source_columns: List[str],
-    source_type: Optional[str] = None
+    source_type: Optional[str] = None,
+    samples_by_col: Optional[Dict[str, List[Any]]] = None,
+    enable_ai: bool = True
 ) -> Dict[str, Any]:
     """
     Computes suggestions matching source columns to the 13 canonical fields using:
@@ -201,6 +204,27 @@ def suggest_column_mappings(
                 "confidence": 0.0,
                 "match_type": "NONE"
             }
+
+    # Pass 3: AI Fallback (Anthropic LLM) ONLY for fields that remain unresolved
+    if enable_ai:
+        unresolved_fields = {
+            k: CANONICAL_FIELDS[k]
+            for k, s in suggestions.items()
+            if not s.get("column")
+        }
+        unallocated_cols = [col for col in source_columns if col not in allocated_columns]
+
+        if unresolved_fields and unallocated_cols:
+            ai_mapper = AIFallbackMapper()
+            ai_predictions = ai_mapper.predict_unresolved_mappings(
+                unresolved_canonical_fields=unresolved_fields,
+                unallocated_source_columns=unallocated_cols,
+                samples_by_col=samples_by_col,
+                source_type=source_type
+            )
+            for f_key, pred in ai_predictions.items():
+                suggestions[f_key] = pred
+                allocated_columns.add(pred["column"])
 
     # Check required fields for this source type
     missing_required = []

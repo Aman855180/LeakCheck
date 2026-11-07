@@ -126,8 +126,14 @@ async def upload_file(
         # Store in cache so user can review and approve mapping
         _PENDING_FILE_CACHE[str(upload.id)] = content
 
-        # Generate automated suggestions
-        mapping_suggestions = suggest_column_mappings(columns, source.source_type)
+        # Extract representative samples for candidate columns from preview rows
+        samples_by_col = {
+            c: [row[c] for row in preview_rows if c in row and row[c] is not None][:5]
+            for c in columns
+        }
+
+        # Generate automated suggestions (Exact -> Fuzzy -> AI Fallback)
+        mapping_suggestions = suggest_column_mappings(columns, source.source_type, samples_by_col=samples_by_col)
 
         return {
             "type": "preview",

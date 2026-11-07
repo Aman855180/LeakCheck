@@ -335,10 +335,20 @@ export const api = {
     }),
 
   // Column Mappings
-  suggestMapping: (sourceId: string, sourceColumns: string[]) =>
+  suggestMapping: (
+    sourceId: string, 
+    sourceColumns: string[], 
+    samplesByCol?: Record<string, any[]>, 
+    enableAi: boolean = true
+  ) =>
     apiRequest<any>('/api/v1/mappings/suggest', {
       method: 'POST',
-      body: JSON.stringify({ source_id: sourceId, source_columns: sourceColumns }),
+      body: JSON.stringify({ 
+        source_id: sourceId, 
+        source_columns: sourceColumns,
+        samples_by_col: samplesByCol,
+        enable_ai: enableAi 
+      }),
     }),
 
   approveMapping: (sourceId: string, mappingJson: Record<string, string>) =>

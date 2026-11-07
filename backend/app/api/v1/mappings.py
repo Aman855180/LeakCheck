@@ -28,6 +28,8 @@ router = APIRouter(prefix="/mappings", tags=["Column Mappings"])
 class SuggestionRequest(BaseModel):
     source_id: uuid.UUID
     source_columns: List[str]
+    samples_by_col: Optional[Dict[str, List[Any]]] = None
+    enable_ai: bool = True
 
 
 @router.post("/suggest", response_model=ColumnMappingSuggestionResponse)
@@ -37,14 +39,19 @@ def get_column_mapping_suggestions(
     current_user: User = Depends(require_role(["finance_exec", "cofounder"]))
 ):
     """
-    Generate automatic exact & fuzzy column mapping suggestions using alias dictionary & RapidFuzz.
+    Generate automatic exact, fuzzy, and AI fallback column mapping suggestions.
     Accessible by both Finance Executives and Co-founders.
     """
     source = db.query(Source).filter(Source.id == payload.source_id).first()
     if not source:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Source {payload.source_id} not found")
 
-    result = suggest_column_mappings(payload.source_columns, source.source_type)
+    result = suggest_column_mappings(
+        source_columns=payload.source_columns,
+        source_type=source.source_type,
+        samples_by_col=payload.samples_by_col,
+        enable_ai=payload.enable_ai
+    )
     return {
         "source_id": source.id,
         "source_type": source.source_type,

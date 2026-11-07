@@ -223,6 +223,13 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
         </span>
       );
     }
+    if (conf.match_type === 'AI_SUGGESTED') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-violet-100 text-violet-800 border border-violet-300">
+          <Sparkles className="w-3 h-3 text-violet-600" /> AI Fallback ({Math.round(conf.confidence * 100)}%)
+        </span>
+      );
+    }
     if (conf.match_type === 'MANUAL') {
       return (
         <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-purple-100 text-purple-800 border border-purple-300">
