@@ -16,7 +16,13 @@ DEFAULT_AS_OF_DATE = date(2026, 11, 1)
 
 
 def get_age_bucket(days: int) -> str:
-    """Bucket age days into 0-7, 8-15, 16-30, 30+."""
+    """
+    Standardized Age Bucketing:
+    - 0 to 7 days: '0-7'
+    - 8 to 15 days: '8-15'
+    - 16 to 30 days: '16-30'
+    - 31+ days: '31+'
+    """
     if days <= 7:
         return "0-7"
     elif days <= 15:
@@ -24,7 +30,7 @@ def get_age_bucket(days: int) -> str:
     elif days <= 30:
         return "16-30"
     else:
-        return "30+"
+        return "31+"
 
 
 class ReconciliationEngine:
@@ -36,14 +42,14 @@ class ReconciliationEngine:
     def run_reconciliation(self, order_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Executes end-to-end reconciliation across all uploaded events or specified order_ids.
-        Recomputes order_recon records idempotently using Decimal precision.
+        Recomputes order_recon records idempotently using Decimal precision and canonical partner namespaces.
         """
-        # 1. Fetch all distinct orders from order_events
-        stmt = select(OrderEvent.external_order_id).distinct()
+        # 1. Fetch distinct (partner_id, external_order_id) pairs
+        stmt = select(OrderEvent.source_partner_id, OrderEvent.external_order_id).distinct()
         if order_ids:
             stmt = stmt.where(OrderEvent.external_order_id.in_(order_ids))
         
-        all_order_ids = self.db.execute(stmt).scalars().all()
+        pairs = self.db.execute(stmt).all()
 
         reconciled_records: List[OrderRecon] = []
         summary_counts = {
@@ -56,8 +62,32 @@ class ReconciliationEngine:
         }
         total_risk = Decimal("0.00")
 
-        for ext_order_id in all_order_ids:
-            recon_entry = self.reconcile_single_order(ext_order_id)
+        # Reconcile each partner + external_order_id pair
+        # Track pairs processed to prevent duplicate reconciliation if courier feeds also contain external_order_id
+        processed_pairs = set()
+
+        for partner_id, ext_order_id in pairs:
+            # If partner is a courier or warehouse, find the primary sales partner for this order if exists
+            partner = self.db.query(Partner).filter(Partner.id == partner_id).first()
+            if partner and partner.partner_type in ("courier", "warehouse"):
+                # Check if there is a sales partner for this order
+                sales_event = (
+                    self.db.query(OrderEvent)
+                    .filter(
+                        OrderEvent.external_order_id == ext_order_id,
+                        OrderEvent.source_partner_id != partner_id
+                    )
+                    .first()
+                )
+                if sales_event:
+                    partner_id = sales_event.source_partner_id
+
+            pair_key = (partner_id, ext_order_id)
+            if pair_key in processed_pairs:
+                continue
+            processed_pairs.add(pair_key)
+
+            recon_entry = self.reconcile_single_order(partner_id=partner_id, external_order_id=ext_order_id)
             if recon_entry:
                 reconciled_records.append(recon_entry)
                 summary_counts[recon_entry.status] = summary_counts.get(recon_entry.status, 0) + 1
@@ -70,29 +100,34 @@ class ReconciliationEngine:
             "total_orders_reconciled": len(reconciled_records),
             "status_counts": summary_counts,
             "total_money_at_risk": str(quantize_amount(total_risk)),
-            "reconciled_orders": [r.order_id for r in reconciled_records]
+            "reconciled_orders": [r.external_order_id for r in reconciled_records]
         }
 
-    def reconcile_single_order(self, external_order_id: str) -> Optional[OrderRecon]:
+    def reconcile_single_order(self, external_order_id: str, partner_id: Optional[str] = None) -> Optional[OrderRecon]:
         """
-        Reconciles a single order across orders, settlements, COD, freight, tracking, and warehouse feeds.
+        Reconciles a single order for a specific partner across orders, settlements, COD, freight, tracking, and warehouse feeds.
         """
         # Fetch all active/effective events for this order
-        events = (
-            self.db.query(OrderEvent)
-            .filter(OrderEvent.external_order_id == external_order_id)
-            .order_by(OrderEvent.event_date.asc())
-            .all()
-        )
+        events_query = self.db.query(OrderEvent).filter(OrderEvent.external_order_id == external_order_id)
+        if partner_id:
+            # Match events from the specified partner or general logistics events matching external_order_id
+            events_query = events_query.filter(
+                or_(
+                    OrderEvent.source_partner_id == partner_id,
+                    OrderEvent.event_type.in_(["freight_charge", "cod_remittance"])
+                )
+            )
+
+        events = events_query.order_by(OrderEvent.event_date.asc()).all()
         if not events:
             return None
 
-        # Determine primary order event
+        # Determine primary order event and partner
         order_event = next((e for e in events if e.event_type.lower() in ("order_placed", "orders")), None)
-        partner_id = order_event.source_partner_id if order_event else events[0].source_partner_id
+        resolved_partner_id = partner_id or (order_event.source_partner_id if order_event else events[0].source_partner_id)
         
         # Get partner channel
-        partner = self.db.query(Partner).filter(Partner.id == partner_id).first()
+        partner = self.db.query(Partner).filter(Partner.id == resolved_partner_id).first()
         channel = partner.channel if partner else "marketplace"
 
         # Determine core order properties
@@ -118,15 +153,23 @@ class ReconciliationEngine:
         tcs_amount = Decimal("0.00")
         tds_amount = Decimal("0.00")
 
+        # Source-evidenced refund events
+        refund_events: List[OrderEvent] = []
+
         for ev in events:
             ev_type = ev.event_type.lower()
             if "settlement" in ev_type:
-                settlement_credit += quantize_amount(ev.settlement_credit if ev.settlement_credit else ev.amount)
+                # Capture settlement credit
+                credit_val = ev.settlement_credit if ev.settlement_credit is not None and ev.settlement_credit != Decimal("0.00") else ev.amount
+                settlement_credit += quantize_amount(credit_val)
                 actual_commission += quantize_amount(ev.commission)
                 actual_fixed_fee += quantize_amount(ev.fixed_fee)
                 actual_freight += quantize_amount(ev.shipping_fee)
                 tcs_amount += quantize_amount(ev.tcs)
                 tds_amount += quantize_amount(ev.tds)
+
+                if ev_type in ("settlement_reversal", "refund", "customer_refund") or (ev.amount < 0) or (credit_val < 0):
+                    refund_events.append(ev)
             elif "cod" in ev_type:
                 cod_remittance += quantize_amount(ev.amount)
                 actual_cod_fee += quantize_amount(ev.cod_fee)
@@ -156,7 +199,7 @@ class ReconciliationEngine:
 
         # Rate Card Calculation
         calc = self.rate_calculator.calculate_expected_settlement(
-            partner_id=partner_id,
+            partner_id=resolved_partner_id,
             channel=channel,
             order_date=order_date,
             order_value=order_value,
@@ -187,7 +230,6 @@ class ReconciliationEngine:
 
         # Status & Reason Codes Determination
         reason_codes: List[str] = []
-        status = "settled"
 
         # Check return not received
         return_grace_deadline = delivery_timestamp + timedelta(days=calc.return_grace_days)
@@ -197,45 +239,56 @@ class ReconciliationEngine:
                 is_return_missing = True
                 reason_codes.append("return_receipt_missing")
 
-        # Discrepancy checks
-        if expected_amount is None:
-            status = "pending"
-            reason_codes.append("missing_rate_card")
-        elif is_return_missing:
-            status = "return_not_received"
-        elif difference is not None and difference < -MATERIALITY_THRESHOLD:
-            # Underpaid / Unpaid
+        # Check discrepancies
+        has_freight_overcharge = (actual_freight - expected_freight > MATERIALITY_THRESHOLD)
+        if has_freight_overcharge:
+            reason_codes.append("freight_overcharge")
+
+        if actual_commission - expected_commission > MATERIALITY_THRESHOLD:
+            reason_codes.append("excess_commission")
+
+        is_unpaid = False
+        is_short_paid = False
+
+        if difference is not None and difference < -MATERIALITY_THRESHOLD:
             if received_amount == Decimal("0.00"):
                 if as_of_dt > due_date:
-                    status = "unpaid_past_due"
+                    is_unpaid = True
                     if payment_mode.upper() == "COD":
                         reason_codes.append("cod_remittance_missing")
                     else:
                         reason_codes.append("settlement_shortfall")
                 else:
                     # Legitimate waiting window
-                    status = "pending"
+                    pass
             else:
-                status = "short_paid"
+                is_short_paid = True
                 if is_returned and actual_freight > expected_freight:
                     reason_codes.append("excess_return_deduction")
                 else:
                     reason_codes.append("settlement_shortfall")
-        elif actual_freight - expected_freight > MATERIALITY_THRESHOLD:
+
+        # STATUS PRECEDENCE HIERARCHY (Section 24.9):
+        # return_not_received > unpaid_past_due > freight_overcharged > short_paid > settled
+        # pending applies only when no confirmed discrepancy exists
+        if expected_amount is None:
+            status = "pending"
+            reason_codes.append("missing_rate_card")
+        elif is_return_missing:
+            status = "return_not_received"
+        elif is_unpaid:
+            status = "unpaid_past_due"
+        elif has_freight_overcharge and not is_short_paid:
             status = "freight_overcharged"
-            reason_codes.append("freight_overcharge")
+        elif is_short_paid:
+            status = "short_paid"
         elif difference is not None and difference > MATERIALITY_THRESHOLD:
-            # Overpayment (non-risk)
             status = "settled"
             reason_codes.append("overpaid_review")
+        elif received_amount == Decimal("0.00") and as_of_dt <= due_date and expected_amount > Decimal("0.00"):
+            status = "pending"
         else:
             status = "settled"
-
-        # Check for individual deduction discrepancy reason codes
-        if actual_commission - expected_commission > MATERIALITY_THRESHOLD:
-            reason_codes.append("excess_commission")
-        if actual_freight - expected_freight > MATERIALITY_THRESHOLD and "freight_overcharge" not in reason_codes:
-            reason_codes.append("freight_overcharge")
 
         # NON-OVERLAPPING MONEY AT RISK CALCULATION
         settlement_gap_comp = Decimal("0.00")
@@ -243,33 +296,115 @@ class ReconciliationEngine:
         return_loss_comp = Decimal("0.00")
         money_at_risk = Decimal("0.00")
 
-        if status not in ("settled", "pending") and expected_amount is not None:
-            # A. Freight excess component
-            raw_freight_excess = max(actual_freight - expected_freight, Decimal("0.00"))
-            if raw_freight_excess > MATERIALITY_THRESHOLD:
-                freight_excess_comp = raw_freight_excess
+        # 1. Freight excess component (max(actual - expected, 0) if > threshold)
+        if has_freight_overcharge:
+            freight_excess_comp = quantize_amount(actual_freight - expected_freight)
 
-            # B. Settlement gap component (excluding freight excess already deducted in settlement)
-            raw_settlement_gap = max(expected_amount - received_amount, Decimal("0.00"))
-            if raw_settlement_gap > MATERIALITY_THRESHOLD:
-                # Deduct freight excess if it was already reflected in the settlement gap
-                settlement_gap_comp = max(raw_settlement_gap - freight_excess_comp, Decimal("0.00"))
+        # 2. Raw Settlement shortfall component
+        raw_settlement_gap = Decimal("0.00")
+        if difference is not None and difference < -MATERIALITY_THRESHOLD:
+            raw_settlement_gap = quantize_amount(expected_amount - received_amount)
 
-            # C. Return loss component
-            if status == "return_not_received":
-                raw_return_loss = order_value
-                # If return loss is already accounted for in settlement gap, deduplicate
-                return_loss_comp = max(raw_return_loss - settlement_gap_comp, Decimal("0.00"))
+        # 3. Source-evidenced return loss component
+        evidenced_refund_exposure = Decimal("0.00")
+        gross_return_loss = Decimal("0.00")
+        cap_applied = False
+        refund_overlap_subtracted = Decimal("0.00")
+        source_refund_event_ids = [str(ev.id) for ev in refund_events]
 
-            # Total non-overlapping exposure
+        if is_return_missing:
+            # Sum of source-evidenced refund deductions
+            total_refund_amount = sum(abs(ev.amount) for ev in refund_events)
+            evidenced_refund_exposure = quantize_amount(total_refund_amount)
+
+            if evidenced_refund_exposure > Decimal("0.00"):
+                # Cap at order_value
+                if evidenced_refund_exposure > order_value:
+                    gross_return_loss = order_value
+                    cap_applied = True
+                else:
+                    gross_return_loss = evidenced_refund_exposure
+
+                return_loss_comp = gross_return_loss
+
+        # 4. Deduplicate overlap between settlement gap and other components
+        # A. Deduct freight excess from settlement gap if freight was already deducted in settlement
+        gap_after_freight = max(raw_settlement_gap - freight_excess_comp, Decimal("0.00"))
+
+        # B. Deduct only the settlement gap attributable to the same underlying refund exposure
+        if evidenced_refund_exposure > Decimal("0.00"):
+            # The portion of the settlement gap caused by this refund deduction
+            refund_overlap_subtracted = min(gap_after_freight, evidenced_refund_exposure)
+            settlement_gap_comp = max(gap_after_freight - refund_overlap_subtracted, Decimal("0.00"))
+        else:
+            settlement_gap_comp = gap_after_freight
+
+        # Total non-overlapping exposure
+        if status not in ("settled", "pending"):
             money_at_risk = quantize_amount(settlement_gap_comp + freight_excess_comp + return_loss_comp)
 
-        # Upsert into order_recon
-        existing_recon = self.db.query(OrderRecon).filter(OrderRecon.order_id == external_order_id).first()
+        # Build detailed audit breakdown JSON
+        audit_details = {
+            "order_value": str(order_value),
+            "expected": {
+                "net": str(expected_amount) if expected_amount is not None else None,
+                "commission": str(expected_commission),
+                "freight": str(expected_freight),
+                "fixed_fee": str(expected_fixed_fee),
+                "cod_fee": str(expected_cod_fee),
+                "rate_card_version": calc.rate_card.rule_type if calc.rate_card else None
+            },
+            "received": {
+                "net": str(received_amount),
+                "settlement_credit": str(settlement_credit),
+                "cod_remittance": str(cod_remittance),
+                "actual_commission": str(actual_commission),
+                "actual_freight": str(actual_freight),
+                "actual_fixed_fee": str(actual_fixed_fee),
+                "actual_cod_fee": str(actual_cod_fee)
+            },
+            "statutory_taxes_isolated": {
+                "tcs": str(tcs_amount),
+                "tds": str(tds_amount),
+                "treatment": "Excluded 100% from leakage calculation"
+            },
+            "risk_decomposition": {
+                "settlement_gap": str(settlement_gap_comp),
+                "freight_excess": str(freight_excess_comp),
+                "return_loss": str(return_loss_comp),
+                "total_money_at_risk": str(money_at_risk)
+            },
+            "return_loss_breakdown": {
+                "is_return_missing": is_return_missing,
+                "evidenced_refund_exposure": str(evidenced_refund_exposure),
+                "gross_return_loss": str(gross_return_loss),
+                "cap_applied": cap_applied,
+                "source_refund_event_ids": source_refund_event_ids,
+                "refund_overlap_subtracted_from_gap": str(refund_overlap_subtracted),
+                "unrelated_settlement_gap_retained": str(settlement_gap_comp),
+                "net_return_loss": str(return_loss_comp)
+            },
+            "precedence_resolution": {
+                "evaluated_status": status,
+                "all_reason_codes": reason_codes
+            }
+        }
+
+        # Upsert into order_recon using (partner_id, external_order_id)
+        existing_recon = (
+            self.db.query(OrderRecon)
+            .filter(
+                OrderRecon.partner_id == resolved_partner_id,
+                OrderRecon.external_order_id == external_order_id
+            )
+            .first()
+        )
+
         if not existing_recon:
             recon = OrderRecon(
+                external_order_id=external_order_id,
                 order_id=external_order_id,
-                partner_id=partner_id,
+                partner_id=resolved_partner_id,
                 channel=channel,
                 payment_mode=payment_mode,
                 order_date=order_date,
@@ -291,7 +426,7 @@ class ReconciliationEngine:
                 tds_amount=tds_amount,
                 difference=difference,
                 status=status,
-                reason_codes=list(set(reason_codes)),
+                reason_codes=reason_codes,
                 due_date=due_date,
                 age_days=age_days,
                 age_bucket=age_bucket,
@@ -299,14 +434,14 @@ class ReconciliationEngine:
                 settlement_gap_component=settlement_gap_comp,
                 freight_excess_component=freight_excess_comp,
                 return_loss_component=return_loss_comp,
-                breakdown_json=calc.breakdown,
+                breakdown_json=audit_details,
                 source_events_count=len(events),
                 computed_at=datetime.now(timezone.utc)
             )
             self.db.add(recon)
+            self.db.flush()
             return recon
         else:
-            existing_recon.partner_id = partner_id
             existing_recon.channel = channel
             existing_recon.payment_mode = payment_mode
             existing_recon.order_date = order_date
@@ -328,7 +463,7 @@ class ReconciliationEngine:
             existing_recon.tds_amount = tds_amount
             existing_recon.difference = difference
             existing_recon.status = status
-            existing_recon.reason_codes = list(set(reason_codes))
+            existing_recon.reason_codes = reason_codes
             existing_recon.due_date = due_date
             existing_recon.age_days = age_days
             existing_recon.age_bucket = age_bucket
@@ -336,8 +471,9 @@ class ReconciliationEngine:
             existing_recon.settlement_gap_component = settlement_gap_comp
             existing_recon.freight_excess_component = freight_excess_comp
             existing_recon.return_loss_component = return_loss_comp
-            existing_recon.breakdown_json = calc.breakdown
+            existing_recon.breakdown_json = audit_details
             existing_recon.source_events_count = len(events)
             existing_recon.computed_at = datetime.now(timezone.utc)
             self.db.add(existing_recon)
+            self.db.flush()
             return existing_recon

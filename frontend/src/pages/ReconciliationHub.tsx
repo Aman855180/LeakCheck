@@ -27,6 +27,7 @@ export const ReconciliationHub: React.FC<ReconciliationHubProps> = ({ currentUse
   const [activeStatusFilter, setActiveStatusFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedPartner, setSelectedPartner] = useState<string>('ALL');
+  const [selectedAgeBucket, setSelectedAgeBucket] = useState<string>('ALL');
   const [isReconciling, setIsReconciling] = useState<boolean>(false);
   const [isLoadingData, setIsLoadingData] = useState<boolean>(true);
   const [selectedOrderForAudit, setSelectedOrderForAudit] = useState<OrderRecon | null>(null);
@@ -133,10 +134,13 @@ export const ReconciliationHub: React.FC<ReconciliationHubProps> = ({ currentUse
   };
 
   const filteredOrders = orders.filter((o) => {
+    if (selectedAgeBucket !== 'ALL' && o.age_bucket !== selectedAgeBucket) {
+      return false;
+    }
     if (!searchQuery) return true;
     const query = searchQuery.toLowerCase();
     return (
-      o.order_id.toLowerCase().includes(query) ||
+      (o.external_order_id || o.order_id).toLowerCase().includes(query) ||
       o.partner_id.toLowerCase().includes(query) ||
       o.reason_codes.some((rc) => rc.toLowerCase().includes(query))
     );
@@ -283,6 +287,27 @@ export const ReconciliationHub: React.FC<ReconciliationHubProps> = ({ currentUse
         </div>
       </div>
 
+      {/* Age Buckets Overview */}
+      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col md:flex-row items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <Calendar className="w-4 h-4 text-slate-500" />
+          <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Age Buckets (Orders at Risk):</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {[
+            { label: '0–7 days', count: summary?.age_bucket_counts?.['0-7'] || 0, badge: 'bg-emerald-100 text-emerald-800' },
+            { label: '8–15 days', count: summary?.age_bucket_counts?.['8-15'] || 0, badge: 'bg-blue-100 text-blue-800' },
+            { label: '16–30 days', count: summary?.age_bucket_counts?.['16-30'] || 0, badge: 'bg-amber-100 text-amber-800' },
+            { label: '31+ days', count: summary?.age_bucket_counts?.['31+'] || 0, badge: 'bg-rose-100 text-rose-800' }
+          ].map((b, idx) => (
+            <div key={idx} className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 shadow-2xs">
+              <span>{b.label}:</span>
+              <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${b.badge}`}>{b.count}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Filter and Search Bar */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-4">
         <div className="flex flex-col md:flex-row items-center justify-between gap-4">
@@ -325,6 +350,18 @@ export const ReconciliationHub: React.FC<ReconciliationHubProps> = ({ currentUse
               <option value="flipkart">Flipkart</option>
               <option value="delhivery">Delhivery</option>
               <option value="bluedart">BlueDart</option>
+            </select>
+
+            <select
+              value={selectedAgeBucket}
+              onChange={(e) => setSelectedAgeBucket(e.target.value)}
+              className="text-xs px-3 py-2 rounded-lg border border-slate-300 bg-white font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="ALL">All Ages</option>
+              <option value="0-7">0–7 days</option>
+              <option value="8-15">8–15 days</option>
+              <option value="16-30">16–30 days</option>
+              <option value="31+">31+ days</option>
             </select>
 
             <div className="relative flex-1 md:w-64">
@@ -387,7 +424,7 @@ export const ReconciliationHub: React.FC<ReconciliationHubProps> = ({ currentUse
                 filteredOrders.map((o) => (
                   <tr key={o.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-4 py-3">
-                      <div className="font-bold text-slate-900">{o.order_id}</div>
+                      <div className="font-bold text-slate-900">{o.external_order_id || o.order_id}</div>
                       <div className="text-[10px] text-slate-400 font-sans">
                         {new Date(o.order_date).toLocaleDateString()}
                       </div>

@@ -1,9 +1,10 @@
+import uuid
 from datetime import date
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, or_
 
 from app.core.database import get_db
 from app.api.deps import require_role
@@ -81,11 +82,27 @@ def list_reconciled_orders(
 @router.get("/orders/{order_id}", response_model=OrderReconResponse)
 def get_order_recon_detail(
     order_id: str,
+    partner_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(["finance_exec", "cofounder"]))
 ):
     """Get full financial reconciliation detail and deduction breakdown for an order."""
-    recon = db.query(OrderRecon).filter(OrderRecon.order_id == order_id).first()
+    query = db.query(OrderRecon)
+    recon = None
+    
+    # Try UUID lookup first
+    try:
+        val_uuid = uuid.UUID(order_id)
+        recon = query.filter(OrderRecon.id == val_uuid).first()
+    except (ValueError, AttributeError):
+        recon = None
+
+    if not recon:
+        filter_cond = or_(OrderRecon.external_order_id == order_id, OrderRecon.order_id == order_id)
+        if partner_id:
+            filter_cond = filter_cond & (OrderRecon.partner_id == partner_id)
+        recon = query.filter(filter_cond).first()
+
     if not recon:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -101,7 +118,7 @@ def get_reconciliation_summary(
 ):
     """
     Aggregates high-level reconciliation KPIs, non-overlapping Money at Risk,
-    status counts, age buckets, and partner breakdowns.
+    status counts, standardized age buckets (0-7, 8-15, 16-30, 31+), and partner breakdowns.
     """
     all_recons = db.query(OrderRecon).all()
     
@@ -121,7 +138,7 @@ def get_reconciliation_summary(
         "0-7": 0,
         "8-15": 0,
         "16-30": 0,
-        "30+": 0
+        "31+": 0
     }
 
     partner_breakdown: Dict[str, Decimal] = {}
@@ -131,7 +148,8 @@ def get_reconciliation_summary(
         total_risk += quantize_amount(r.money_at_risk)
 
         if r.money_at_risk > 0:
-            age_buckets[r.age_bucket] = age_buckets.get(r.age_bucket, 0) + 1
+            age_bucket_key = r.age_bucket if r.age_bucket in age_buckets else ("31+" if "30" in r.age_bucket or "+" in r.age_bucket else "0-7")
+            age_buckets[age_bucket_key] = age_buckets.get(age_bucket_key, 0) + 1
             partner_breakdown[r.partner_id] = partner_breakdown.get(r.partner_id, Decimal("0.00")) + quantize_amount(r.money_at_risk)
 
     return ReconSummaryResponse(

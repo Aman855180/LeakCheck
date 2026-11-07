@@ -109,7 +109,7 @@ def test_sample_1_unpaid_past_due(db_session):
     assert recon.money_at_risk == Decimal("1409.00")
     assert "cod_remittance_missing" in recon.reason_codes
     assert recon.age_days > 30
-    assert recon.age_bucket == "30+"
+    assert recon.age_bucket == "31+"
 
 
 def test_sample_2_short_paid(db_session):

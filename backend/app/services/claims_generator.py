@@ -15,6 +15,7 @@ class ClaimsGenerator:
         """
         Generates draft claims for all orders with confirmed discrepancies and money at risk > 0.
         Preserves existing executive-entered notes, recovered amounts, and modified claim statuses.
+        Uses order_recon_id as the canonical foreign key to avoid cross-partner collisions.
         """
         stmt = (
             select(OrderRecon)
@@ -24,13 +25,13 @@ class ClaimsGenerator:
             )
         )
         if order_ids:
-            stmt = stmt.where(OrderRecon.order_id.in_(order_ids))
+            stmt = stmt.where(OrderRecon.external_order_id.in_(order_ids))
 
         discrepant_orders = self.db.execute(stmt).scalars().all()
         generated_claims: List[Claim] = []
 
         for recon in discrepant_orders:
-            # Determine claim reason based on primary status
+            # Determine claim reason based on primary status and reason codes
             claim_reason = recon.status
             if recon.reason_codes:
                 claim_reason = recon.reason_codes[0]
@@ -38,13 +39,15 @@ class ClaimsGenerator:
             existing_claim = (
                 self.db.query(Claim)
                 .filter(
-                    Claim.order_id == recon.order_id,
+                    Claim.order_recon_id == recon.id,
                     Claim.claim_reason == claim_reason
                 )
                 .first()
             )
 
             evidence = {
+                "order_id": recon.external_order_id,
+                "partner_id": recon.partner_id,
                 "order_value": str(recon.order_value),
                 "expected_amount": str(recon.expected_amount) if recon.expected_amount is not None else None,
                 "received_amount": str(recon.received_amount),
@@ -59,7 +62,7 @@ class ClaimsGenerator:
             }
 
             if existing_claim:
-                # Update evidence, but NEVER overwrite manual notes, recovered_amount, or non-draft status
+                # Update evidence and amount if still draft, but NEVER overwrite manual notes, recovered_amount, or non-draft status
                 existing_claim.evidence_json = evidence
                 if existing_claim.claim_status == "draft":
                     existing_claim.claim_amount = quantize_amount(recon.money_at_risk)
@@ -67,7 +70,9 @@ class ClaimsGenerator:
                 generated_claims.append(existing_claim)
             else:
                 claim = Claim(
-                    order_id=recon.order_id,
+                    order_recon_id=recon.id,
+                    external_order_id=recon.external_order_id,
+                    order_id=recon.external_order_id,
                     partner_id=recon.partner_id,
                     claim_amount=quantize_amount(recon.money_at_risk),
                     recovered_amount=quantize_amount(0.00),

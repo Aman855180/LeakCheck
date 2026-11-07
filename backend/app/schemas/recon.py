@@ -14,6 +14,7 @@ class OrderReconResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    external_order_id: str
     order_id: str
     partner_id: str
     channel: str

@@ -9,7 +9,9 @@ class Claim(Base):
     __tablename__ = "claims"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(String(128), nullable=False, index=True)
+    order_recon_id = Column(UUID(as_uuid=True), ForeignKey("order_recon.id", ondelete="CASCADE"), nullable=False, index=True)
+    external_order_id = Column(String(128), nullable=False, index=True)
+    order_id = Column(String(128), nullable=False, index=True)  # Backward compatible alias
     partner_id = Column(String(64), ForeignKey("partners.id", ondelete="RESTRICT"), nullable=False, index=True)
     claim_amount = Column(Numeric(12, 2), nullable=False, default=0.00)
     recovered_amount = Column(Numeric(12, 2), nullable=False, default=0.00)
@@ -21,5 +23,12 @@ class Claim(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("order_id", "claim_reason", name="uq_order_claim_reason"),
+        UniqueConstraint("order_recon_id", "claim_reason", name="uq_claim_recon_reason"),
     )
+
+    def __init__(self, **kwargs):
+        if "external_order_id" not in kwargs and "order_id" in kwargs:
+            kwargs["external_order_id"] = kwargs["order_id"]
+        elif "order_id" not in kwargs and "external_order_id" in kwargs:
+            kwargs["order_id"] = kwargs["external_order_id"]
+        super().__init__(**kwargs)

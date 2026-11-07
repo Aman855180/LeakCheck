@@ -91,6 +91,7 @@ export interface ColumnMapping {
 
 export interface OrderRecon {
   id: string;
+  external_order_id: string;
   order_id: string;
   partner_id: string;
   channel: string;
@@ -117,7 +118,7 @@ export interface OrderRecon {
   reason_codes: string[];
   due_date: string | null;
   age_days: number;
-  age_bucket: '0-7' | '8-15' | '16-30' | '30+';
+  age_bucket: '0-7' | '8-15' | '16-30' | '31+';
   money_at_risk: string;
   settlement_gap_component: string;
   freight_excess_component: string;
