@@ -259,3 +259,27 @@ def test_orders_feed_never_requires_settlement_amount():
     assert len(missing) == 0
     assert "settlement_amount" not in missing
 
+
+def test_upload_legacy_xls_rejected(client, finance_exec_cookies, finance_exec_headers, db_session):
+    """SEC-03: Uploading legacy .xls format returns HTTP 400 with UNSUPPORTED_FORMAT error."""
+    source = db_session.query(Source).first()
+    assert source is not None
+
+    legacy_xls_bytes = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 100
+    files = {
+        "file": ("sales_legacy.xls", io.BytesIO(legacy_xls_bytes), "application/vnd.ms-excel")
+    }
+    data = {
+        "source_id": str(source.id)
+    }
+
+    res = client.post(
+        "/api/v1/uploads/",
+        data=data,
+        files=files,
+        cookies=finance_exec_cookies,
+        headers=finance_exec_headers
+    )
+    assert res.status_code == 400
+    payload = res.json()
+    assert "Legacy Excel (.xls) format is unsupported" in payload["detail"]

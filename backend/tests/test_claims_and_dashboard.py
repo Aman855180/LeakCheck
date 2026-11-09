@@ -375,3 +375,106 @@ def test_recovery_lifecycle_corrections_and_recovered_at(client, db_session, fin
     assert c3["claim_status"] == "recovered"
     assert "2026-11-05" in c3["recovered_at"]
 
+
+def test_csv_formula_injection_sanitization():
+    """
+    SEC-03: Regression tests for spreadsheet formula injection (CWE-1236).
+    Verifies that formula triggers preceded by leading spaces, tabs, newlines,
+    or carriage returns are safely escaped, while valid numeric financials are preserved.
+    """
+    from app.api.v1.claims import sanitize_csv_cell
+
+    required_cases = [
+        ("=1+2", "'=1+2"),
+        (" =1+2", "' =1+2"),
+        ("   =1+2", "'   =1+2"),
+        ("\n=1+2", "'\n=1+2"),
+        ("\r=1+2", "'\r=1+2"),
+        ("\t=1+2", "'\t=1+2"),
+        (" @SUM(1,2)", "' @SUM(1,2)"),
+        (" +cmd", "' +cmd"),
+        ("-5+2", "'-5+2"),
+        ("-125.50", "-125.50"),
+        ("+500.00", "+500.00"),
+        ("0", "0"),
+        ("125.50", "125.50"),
+        ("Standard Text Value", "Standard Text Value"),
+    ]
+
+    for raw, expected in required_cases:
+        assert sanitize_csv_cell(raw) == expected, f"Failed for {repr(raw)}: expected {repr(expected)}"
+
+
+def test_claims_export_csv_neutralizes_injection(client, finance_exec_cookies, finance_exec_headers, db_session):
+    """
+    SEC-03: Verifies that exported CSV output directly from /api/v1/claims/export/csv
+    safely escapes formula triggers in claim notes and identifiers.
+    """
+    from app.models.claim import Claim
+    from app.models.order_recon import OrderRecon
+    from decimal import Decimal
+    from datetime import datetime, timezone
+    import csv
+    import io
+
+    # Insert a Recon record first to satisfy foreign key constraint
+    recon = OrderRecon(
+        external_order_id=" =1+2",
+        order_id=" =1+2",
+        partner_id="shopify",
+        channel="courier",
+        payment_mode="COD",
+        order_date=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        order_value=Decimal("500.00"),
+        expected_amount=Decimal("500.00"),
+        received_amount=Decimal("350.00"),
+        difference=Decimal("-150.00"),
+        status="freight_overcharge",
+        reason_codes=["freight_overcharge"],
+        money_at_risk=Decimal("150.00")
+    )
+    db_session.add(recon)
+    db_session.commit()
+
+    # Insert a test claim with formula payload in notes and external_order_id
+    test_claim = Claim(
+        order_recon_id=recon.id,
+        external_order_id=" =1+2",
+        partner_id="shopify",
+        claim_reason="freight_overcharge",
+        claim_status="draft",
+        claim_amount=Decimal("150.00"),
+        recovered_amount=Decimal("0.00"),
+        notes=" @SUM(1,2)",
+        evidence_json={"settlement_gap": "0.00", "freight_excess": "150.00", "return_loss": "0.00"},
+        created_at=datetime.now(timezone.utc)
+    )
+    db_session.add(test_claim)
+    db_session.commit()
+
+    res = client.get(
+        "/api/v1/claims/export/csv",
+        cookies=finance_exec_cookies,
+        headers=finance_exec_headers
+    )
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/csv")
+    csv_text = res.text
+
+    reader = csv.reader(io.StringIO(csv_text))
+    rows = list(reader)
+    header = rows[0]
+    assert "Order ID" in header
+    assert "Notes" in header
+    order_id_idx = header.index("Order ID")
+    notes_idx = header.index("Notes")
+
+    found_row = None
+    for r in rows[1:]:
+        if r[order_id_idx] == "' =1+2":
+            found_row = r
+            break
+
+    assert found_row is not None, "Injected order ID was not found or not escaped"
+    assert found_row[order_id_idx] == "' =1+2"
+    assert found_row[notes_idx] == "' @SUM(1,2)"

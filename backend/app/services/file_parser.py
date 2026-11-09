@@ -61,14 +61,19 @@ def validate_file_metadata(file_name: str, file_size: int, content: bytes) -> st
         if b"\x00" in content[:1024]:
             raise FileValidationError("Invalid CSV format (binary characters detected)", code="INVALID_SIGNATURE")
         return "csv"
-    elif lower_name.endswith(".xlsx") or lower_name.endswith(".xls"):
+    elif lower_name.endswith(".xlsx"):
         # XLSX ZIP magic bytes: 0x50 0x4B 0x03 0x04 ("PK\x03\x04")
         if not content.startswith(b"PK\x03\x04"):
             raise FileValidationError("Invalid XLSX format (corrupted file signature)", code="INVALID_SIGNATURE")
         return "xlsx"
+    elif lower_name.endswith(".xls"):
+        raise FileValidationError(
+            "Legacy Excel (.xls) format is unsupported. Please convert and upload as modern .xlsx or standard .csv.",
+            code="UNSUPPORTED_FORMAT"
+        )
     else:
         raise FileValidationError(
-            f"Unsupported file format '{file_name}'. Only CSV and XLSX are supported.",
+            f"Unsupported file format '{file_name}'. Only .csv and .xlsx files are supported.",
             code="UNSUPPORTED_FORMAT"
         )
 

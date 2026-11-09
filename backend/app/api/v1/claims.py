@@ -197,8 +197,9 @@ def get_claims_summary(
 
 def sanitize_csv_cell(val: Any) -> str:
     """
-    Prevents CSV injection attacks (CWE-1236) by escaping leading formula triggers.
-    Preserves legitimate negative and positive numeric financial values.
+    Prevents CSV / spreadsheet formula injection attacks (CWE-1236) by escaping
+    formula triggers (=, +, -, @) that appear after leading whitespace or control characters.
+    Preserves legitimate positive and negative numeric financial values (e.g., -125.50, +500.00, 0, 125.50).
     """
     if val is None:
         return ""
@@ -207,13 +208,18 @@ def sanitize_csv_cell(val: Any) -> str:
     s = str(val)
     if not s:
         return ""
-    # Check if string represents a pure numeric literal (e.g. -123.45, +123.45, 0.00)
+    # Check if string represents a pure numeric literal (e.g. -125.50, +500.00, 0, 125.50)
     try:
         Decimal(s.strip())
         return s
     except Exception:
         pass
-    if s[0] in ("=", "+", "-", "@", "\t", "\r"):
+    # Check for formula triggers after leading whitespace or control characters
+    stripped = s.lstrip(" \t\r\n\x00\x0b\x0c")
+    if stripped and stripped[0] in ("=", "+", "-", "@"):
+        return f"'{s}"
+    # Also escape if the raw string starts with a control character that spreadsheet software strips
+    if s[0] in ("\t", "\r", "\n", "\x00", "\x0b", "\x0c"):
         return f"'{s}"
     return s
 

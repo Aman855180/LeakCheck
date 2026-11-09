@@ -283,7 +283,12 @@ export const UploadCenter: React.FC<UploadCenterProps> = ({ currentUser, onNavig
               </div>
               <select
                 value={selectedSourceId}
-                onChange={(e) => setSelectedSourceId(e.target.value)}
+                onChange={(e) => {
+                  setSelectedSourceId(e.target.value);
+                  setSelectedFile(null);
+                  setUploadSuccess(null);
+                  setUploadError(null);
+                }}
                 disabled={isCoFounder || isUploading}
                 className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-500"
               >
@@ -325,7 +330,7 @@ export const UploadCenter: React.FC<UploadCenterProps> = ({ currentUser, onNavig
               }`}>
                 <input
                   type="file"
-                  accept=".csv,.xlsx,.xls"
+                  accept=".csv,.xlsx"
                   onChange={handleFileChange}
                   disabled={isCoFounder || isUploading}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"

@@ -1,8 +1,8 @@
 # LeakCheck — Deployment & Operations Guide
 
-**Platform:** LeakCheck — Intelligent Payment Reconciliation & Financial Leakage Detection  
-**Client Scenario:** Company A, Bengaluru D2C Brand (₹43.2 Cr GMV)  
-**System Version:** `1.0.0 (Production Delivery)`  
+**Platform:** LeakCheck — Intelligent Payment Reconciliation & Financial Leakage Detection
+**Client Scenario:** Company A, Bengaluru D2C Brand (₹43.2 Cr GMV)
+**System Version:** `1.0.0 (Release Candidate / Staging Ready)`
 **GitHub Repository:** [https://github.com/Aman855180/LeakCheck](https://github.com/Aman855180/LeakCheck)
 
 ---
@@ -15,7 +15,8 @@ LeakCheck is an automated, multi-feed financial reconciliation engine engineered
 - **Backend API:** FastAPI (Python 3.11+ / 3.13) with asynchronous endpoints, SQLAlchemy 2.0 ORM, Alembic migrations, and Psycopg 3 streaming driver.
 - **Frontend SPA:** React 18, TypeScript, Tailwind CSS, Lucide icons, Vite 5, TanStack Table & Query.
 - **Database:** PostgreSQL 16+ with ACID append-only event lineage, advisory locking, composite partner keys, and SQL window analytics.
-- **Mapping & AI Engine:** Exact dictionary + RapidFuzz fuzzy matcher with Anthropic Claude 3.5 Sonnet fallback (with pre-LLM PII scrubbing).
+- **Mapping & AI Engine:** Exact dictionary + RapidFuzz fuzzy matcher with Anthropic Claude 3.5 Sonnet fallback (with pre-LLM PII scrubbing and human approval).
+- **Supported Statement Formats:** `.csv` (text/csv) and `.xlsx` (OpenXML Spreadsheet) with magic-byte validation. Legacy `.xls` (pre-2007 BIFF8) is explicitly rejected with HTTP 400 `UNSUPPORTED_FORMAT`.
 
 ---
 
@@ -61,7 +62,7 @@ Create `.env` in the root directory (or in `backend/` and `frontend/` respective
    ```bash
    # Linux / macOS
    sudo systemctl start postgresql
-   
+
    # Windows PowerShell
    Start-Service postgresql-x64-16
    ```
@@ -77,7 +78,7 @@ Create `.env` in the root directory (or in `backend/` and `frontend/` respective
    ```bash
    cd backend
    python -m venv venv
-   
+
    # Linux / macOS
    source venv/bin/activate
    # Windows PowerShell
@@ -143,12 +144,12 @@ The following pre-configured demo user accounts are seeded and tested:
 ## 7. Operational Verification & Testing
 
 ### Backend Test Suite
-Run the 94-test regression suite covering authentication, RBAC, ingestion, rate cards, and reconciliation:
+Run the 98-test regression suite covering authentication, RBAC, ingestion, rate cards, and reconciliation:
 ```bash
 cd backend
 python -m pytest tests/ -v
 ```
-**Expected Result:** `94 passed, 0 failures`.
+**Expected Result:** `98 passed, 0 failures`.
 
 ### Frontend Build Verification
 Verify production TypeScript compilation:
@@ -157,3 +158,12 @@ cd frontend
 npm run build
 ```
 **Expected Result:** Clean compilation with `0 errors`.
+
+---
+
+## 8. Ingestion & Security Safeguards
+
+- **Supported Ingestion Formats:** `.csv` and `.xlsx` only. Legacy `.xls` uploads are rejected with HTTP 400 `UNSUPPORTED_FORMAT`.
+- **Upload Size & Row Limits:** Enforced 25 MB max upload limit and 150,000 row limits per statement file.
+- **CSV Formula Injection Sanitization:** Exported CSV files automatically neutralize dangerous spreadsheet formula triggers (`=`, `+`, `-`, `@`) even when preceded by whitespace or control characters, while strictly preserving negative numbers and legitimate currency values.
+- **XLSX Decompression Protection:** Calamine/fastexcel streaming parser handles standard OpenXML workbooks. For production hardening against malicious compression ratios, host container memory quotas (e.g. Docker `mem_limit: 1g`) should be enforced.

@@ -38,6 +38,15 @@ def test_validate_file_metadata_invalid_extension():
     assert exc.value.code == "UNSUPPORTED_FORMAT"
 
 
+def test_validate_file_metadata_legacy_xls_rejected():
+    # Legacy OLE2 BIFF8 Excel file
+    content = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 50
+    with pytest.raises(FileValidationError) as exc:
+        validate_file_metadata("legacy_sheet.xls", len(content), content)
+    assert exc.value.code == "UNSUPPORTED_FORMAT"
+    assert "Legacy Excel (.xls) format is unsupported" in exc.value.message
+
+
 def test_validate_file_metadata_oversized():
     fake_size = MAX_FILE_SIZE_BYTES + 1024
     with pytest.raises(FileValidationError) as exc:
