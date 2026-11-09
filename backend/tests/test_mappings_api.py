@@ -132,3 +132,100 @@ def test_approved_mapping_immutability_trigger(db_session):
         db_session.flush()
     nested.rollback()
     assert "is immutable" in str(exc.value)
+
+
+def test_approving_unchanged_mapping_is_idempotent_no_new_version(client, finance_exec_cookies, finance_exec_headers, db_session):
+    """Approving an unchanged mapping does not increment version or create redundant records."""
+    source = db_session.query(Source).filter(Source.source_type == "orders").first()
+    assert source is not None
+
+    payload_a = {
+        "source_id": str(source.id),
+        "mapping_json": {
+            "external_order_id": "Order ID",
+            "order_value": "Total Price",
+            "order_date": "Created At"
+        }
+    }
+
+    # 1. First approval
+    res1 = client.post(
+        "/api/v1/mappings/approve",
+        json=payload_a,
+        cookies=finance_exec_cookies,
+        headers=finance_exec_headers
+    )
+    assert res1.status_code == 201
+    data1 = res1.json()
+    ver1 = data1["version"]
+
+    count_before = db_session.query(ColumnMapping).filter(ColumnMapping.source_id == source.id).count()
+
+    # 2. Second approval with identical mapping (different key order and extra whitespace)
+    payload_b = {
+        "source_id": str(source.id),
+        "mapping_json": {
+            "order_date": "  Created At  ",
+            "external_order_id": "Order ID",
+            "order_value": "Total Price"
+        }
+    }
+    res2 = client.post(
+        "/api/v1/mappings/approve",
+        json=payload_b,
+        cookies=finance_exec_cookies,
+        headers=finance_exec_headers
+    )
+    assert res2.status_code == 201
+    data2 = res2.json()
+
+    # Must be marked already active with identical version
+    assert data2["is_already_active"] is True
+    assert data2["version"] == ver1
+    assert data2["id"] == data1["id"]
+
+    # Database count must not increase
+    count_after = db_session.query(ColumnMapping).filter(ColumnMapping.source_id == source.id).count()
+    assert count_after == count_before
+
+
+def test_approving_changed_mapping_creates_single_new_version(client, finance_exec_cookies, finance_exec_headers, db_session):
+    """Genuinely changed mapping creates exactly one new approved version and supersedes previous."""
+    source = db_session.query(Source).filter(Source.source_type == "orders").first()
+    assert source is not None
+
+    # Get latest version
+    latest_before = (
+        db_session.query(ColumnMapping)
+        .filter(ColumnMapping.source_id == source.id, ColumnMapping.status == "approved")
+        .order_by(ColumnMapping.version.desc())
+        .first()
+    )
+    prev_version = latest_before.version if latest_before else 0
+
+    # Submit changed mapping
+    payload_new = {
+        "source_id": str(source.id),
+        "mapping_json": {
+            "external_order_id": "Different_Order_Col",
+            "order_value": "Total Price",
+            "order_date": "Created At"
+        }
+    }
+    res = client.post(
+        "/api/v1/mappings/approve",
+        json=payload_new,
+        cookies=finance_exec_cookies,
+        headers=finance_exec_headers
+    )
+    assert res.status_code == 201
+    data = res.json()
+    assert data["is_already_active"] is False
+    assert data["version"] == prev_version + 1
+    assert data["status"] == "approved"
+
+    # Verify prior version is now superseded
+    db_session.expire_all()
+    prior = db_session.query(ColumnMapping).filter(ColumnMapping.id == latest_before.id).first()
+    assert prior.status == "superseded"
+

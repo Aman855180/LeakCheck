@@ -25,6 +25,7 @@ class ColumnMappingResponse(BaseModel):
     approved_at: Optional[datetime] = None
     rolled_back_at: Optional[datetime] = None
     created_at: datetime
+    is_already_active: bool = False
 
 
 class ColumnMappingSuggestionResponse(BaseModel):

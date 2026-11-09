@@ -917,12 +917,16 @@ export const ClaimsManagement: React.FC<ClaimsManagementProps> = ({
             </div>
 
             {/* Modal Footer */}
-            <div className="px-6 py-3 border-t border-slate-200 bg-slate-50 flex justify-end">
+            <div className="px-6 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+              <span className="text-[11px] text-slate-500 font-sans">
+                Save status or recovery updates above before closing.
+              </span>
               <button
+                type="button"
                 onClick={() => setSelectedClaimDetail(null)}
-                className="px-4 py-2 rounded-lg bg-slate-800 text-white text-xs font-semibold hover:bg-slate-900"
+                className="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-100 transition-colors shadow-sm"
               >
-                Close Claim
+                Close Dialog
               </button>
             </div>
           </div>

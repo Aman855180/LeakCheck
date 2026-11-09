@@ -73,7 +73,7 @@ def test_sample_1_unpaid_past_due(db_session):
     Status: unpaid_past_due, Money at Risk: ₹1,409.
     """
     test_upload = get_test_upload(db_session, "shopify")
-    order_id = "ORD-W-204118"
+    order_id = f"TEST-ORD-W-204118-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
     delivery_dt = datetime(2026, 3, 4, 12, 0, tzinfo=timezone.utc)
 
@@ -85,7 +85,7 @@ def test_sample_1_unpaid_past_due(db_session):
     # 2. Tracking delivered
     trk = TrackingEvent(
         order_id=order_id,
-        tracking_number="DEL-AWB-204118",
+        tracking_number=f"DEL-{order_id}",
         courier_code="delhivery",
         event_timestamp=delivery_dt,
         raw_status_code="DELIVERED",
@@ -118,7 +118,7 @@ def test_sample_2_short_paid(db_session):
     Order Value: ₹1,199. Expected: ₹899. Received: ₹862.
     Difference: -₹37. Status: short_paid, Money at Risk: ₹37.
     """
-    order_id = "ORD-M-88120"
+    order_id = f"TEST-ORD-M-88120-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 2, 11, 0, tzinfo=timezone.utc)
 
     # Order placed
@@ -154,7 +154,7 @@ def test_sample_3_returned_excess_deduction(db_session):
     Difference: -₹46. Status: short_paid, reason: excess_return_deduction, Money at Risk: ₹46.
     """
     test_upload = get_test_upload(db_session, "shopify")
-    order_id = "ORD-W-204377"
+    order_id = f"TEST-ORD-W-204377-{uuid.uuid4().hex[:6]}"
     order_dt = datetime(2026, 3, 3, 14, 0, tzinfo=timezone.utc)
 
     # Order placed
@@ -165,7 +165,7 @@ def test_sample_3_returned_excess_deduction(db_session):
     # Tracking status RTO
     trk = TrackingEvent(
         order_id=order_id,
-        tracking_number="BD-WB-204377",
+        tracking_number=f"BD-{order_id}",
         courier_code="bluedart",
         event_timestamp=order_dt + timedelta(days=2),
         raw_status_code="RTO",
@@ -179,7 +179,7 @@ def test_sample_3_returned_excess_deduction(db_session):
     # Warehouse receipt delivered
     wh_receipt = WarehouseReceipt(
         order_id=order_id,
-        tracking_number="BD-WB-204377",
+        tracking_number=f"BD-{order_id}",
         warehouse_id="WH-BLR-01",
         received_at=order_dt + timedelta(days=5),
         receipt_status="delivered",

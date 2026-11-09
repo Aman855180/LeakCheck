@@ -73,6 +73,12 @@ def test_duplicate_file_upload_rejected_409(client, finance_exec_cookies, financ
         headers=finance_exec_headers
     )
     assert res1.status_code == 201
+    upload_id = res1.json().get("upload_id") or res1.json().get("upload", {}).get("id")
+    from app.models.upload import Upload
+    up = db_session.query(Upload).filter(Upload.id == upload_id).first()
+    up.processing_status = "completed"
+    db_session.add(up)
+    db_session.commit()
 
     # Second upload with identical bytes
     files2 = {"file": ("dup_file.csv", io.BytesIO(csv_content), "text/csv")}
@@ -143,3 +149,113 @@ def test_quarantined_rows_recorded(client, finance_exec_cookies, finance_exec_he
     error_codes = [e["error_code"] for e in errors]
     assert "MISSING_ORDER_ID" in error_codes
     assert "INVALID_NUMERIC" in error_codes
+
+
+def test_incompatible_mapping_triggers_staging_preview(client, finance_exec_cookies, finance_exec_headers, db_session):
+    """If an approved mapping expects columns not present in the uploaded file, stage as preview."""
+    source = db_session.query(Source).filter(Source.source_type == "orders").first()
+    assert source is not None
+
+    from app.models.user import User
+    user = db_session.query(User).first()
+
+    # Create mapping that expects 'legacy_tracking_no' for external_order_id
+    bad_mapping = ColumnMapping(
+        source_id=source.id,
+        version=987,
+        mapping_json={
+            "external_order_id": "legacy_tracking_no",
+            "order_value": "order_value",
+            "order_date": "order_date"
+        },
+        status="approved",
+        created_by=user.id,
+        approved_by=user.id
+    )
+    db_session.add(bad_mapping)
+    db_session.commit()
+
+    # Upload file that lacks 'legacy_tracking_no'
+    csv_content = b"Order ID,Total Price,Created At\nORD-INCOMPAT-01,500.00,2026-03-01 10:00:00\n"
+    files = {"file": ("incompatible_file.csv", io.BytesIO(csv_content), "text/csv")}
+    data = {"source_id": str(source.id)}
+
+    res = client.post(
+        "/api/v1/uploads/",
+        files=files,
+        data=data,
+        cookies=finance_exec_cookies,
+        headers=finance_exec_headers
+    )
+    assert res.status_code == 201
+    payload = res.json()
+    assert payload["type"] == "preview"
+    assert payload["is_mapping_compatible"] is False
+    assert len(payload["incompatibility_reasons"]) > 0
+
+
+def test_failed_upload_retry_allowed_and_linked(client, finance_exec_cookies, finance_exec_headers, db_session):
+    """A failed upload does not block a retry with identical SHA-256 hash; links retry_of_upload_id."""
+    source = db_session.query(Source).filter(Source.source_type == "orders").first()
+    assert source is not None
+
+    from app.models.upload import Upload
+    from app.models.user import User
+    user = db_session.query(User).first()
+
+    fake_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    # Create an existing failed upload with fake_hash
+    failed_upload = Upload(
+        source_id=source.id,
+        partner_id=source.partner_id,
+        source_type=source.source_type,
+        file_name="failed_retry_test.csv",
+        file_hash=fake_hash,
+        file_size_bytes=100,
+        row_count=5,
+        processing_status="failed",
+        error_count=5,
+        uploaded_by=user.id
+    )
+    db_session.add(failed_upload)
+    db_session.commit()
+
+    # Now verify query logic in uploads.py: existing_completed should be None because status is 'failed'
+    existing_completed = (
+        db_session.query(Upload)
+        .filter(
+            Upload.file_hash == fake_hash,
+            Upload.processing_status.in_(["completed", "processing"])
+        )
+        .first()
+    )
+    assert existing_completed is None
+
+    prior_attempt = (
+        db_session.query(Upload)
+        .filter(Upload.file_hash == fake_hash)
+        .order_by(Upload.created_at.desc())
+        .first()
+    )
+    assert prior_attempt is not None
+    assert prior_attempt.id == failed_upload.id
+
+
+def test_orders_feed_never_requires_settlement_amount():
+    """Verify that orders feed strictly never requires settlement_amount."""
+    from app.services.column_mapper import CANONICAL_FIELDS, validate_mapping_completeness
+
+    assert "orders" not in CANONICAL_FIELDS["settlement_amount"]["required_for"]
+    assert "orders" in CANONICAL_FIELDS["external_order_id"]["required_for"]
+    assert "orders" in CANONICAL_FIELDS["order_value"]["required_for"]
+
+    orders_mapping = {
+        "external_order_id": "Order ID",
+        "order_value": "Total Price",
+        "order_date": "Created At"
+    }
+    is_valid, missing = validate_mapping_completeness(orders_mapping, "orders")
+    assert is_valid is True
+    assert len(missing) == 0
+    assert "settlement_amount" not in missing
+

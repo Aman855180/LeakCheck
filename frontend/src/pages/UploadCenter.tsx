@@ -169,6 +169,13 @@ export const UploadCenter: React.FC<UploadCenterProps> = ({ currentUser, onNavig
             <CheckCircle2 className="w-3.5 h-3.5" /> Ingested
           </span>
         );
+      case 'uploaded':
+      case 'staged':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-100 text-sky-800 border border-sky-300">
+            <Clock className="w-3.5 h-3.5" /> Staged
+          </span>
+        );
       case 'mapping_pending':
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-300">
@@ -260,9 +267,20 @@ export const UploadCenter: React.FC<UploadCenterProps> = ({ currentUser, onNavig
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Source Selector */}
             <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Data Source & Type <span className="text-rose-500">*</span>
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-sm font-semibold text-slate-700">
+                  Data Source & Type <span className="text-rose-500">*</span>
+                </label>
+                {selectedSourceId && (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToMapping(selectedSourceId)}
+                    className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold inline-flex items-center gap-1 hover:underline"
+                  >
+                    Configure / Review Mapping →
+                  </button>
+                )}
+              </div>
               <select
                 value={selectedSourceId}
                 onChange={(e) => setSelectedSourceId(e.target.value)}

@@ -19,7 +19,7 @@ from app.services.file_parser import (
     compute_sha256,
     FileValidationError
 )
-from app.services.column_mapper import suggest_column_mappings
+from app.services.column_mapper import suggest_column_mappings, CANONICAL_FIELDS
 from app.services.ingestion_service import IngestionService
 
 router = APIRouter(prefix="/uploads", tags=["Uploads"])
@@ -74,12 +74,28 @@ async def upload_file(
     file_hash = compute_sha256(content)
 
     # Check for duplicate file upload
-    existing_upload = db.query(Upload).filter(Upload.file_hash == file_hash).first()
-    if existing_upload:
+    # Only block if an existing upload with this SHA-256 hash is already COMPLETED or currently PROCESSING
+    existing_completed = (
+        db.query(Upload)
+        .filter(
+            Upload.file_hash == file_hash,
+            Upload.processing_status.in_(["completed", "processing"])
+        )
+        .first()
+    )
+    if existing_completed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Duplicate file detected. File '{file.filename}' with SHA-256 {file_hash[:12]}... was already uploaded on {existing_upload.created_at} (ID: {existing_upload.id})."
+            detail=f"Duplicate file detected. File '{file.filename}' with SHA-256 {file_hash[:12]}... was already uploaded on {existing_completed.created_at} (ID: {existing_completed.id}) with status '{existing_completed.processing_status}'."
         )
+
+    # If there was a prior failed attempt for this file, link the new attempt to it for complete audit lineage
+    prior_attempt = (
+        db.query(Upload)
+        .filter(Upload.file_hash == file_hash)
+        .order_by(desc(Upload.created_at))
+        .first()
+    )
 
     # Parse file & sanitize PII
     try:
@@ -95,6 +111,28 @@ async def upload_file(
         .first()
     )
 
+    # Verify mapping compatibility against actual columns in the uploaded file
+    is_compatible = True
+    incompatibility_reasons: List[str] = []
+    if mapping and mapping.mapping_json:
+        col_set = {c.lower().strip() for c in columns}
+        for field_key, meta in CANONICAL_FIELDS.items():
+            if source.source_type in meta.get("required_for", []):
+                mapped_col = mapping.mapping_json.get(field_key)
+                if not mapped_col or str(mapped_col).strip() == "":
+                    is_compatible = False
+                    incompatibility_reasons.append(
+                        f"Required field '{meta['display_name']}' is not mapped in version v{mapping.version}."
+                    )
+                elif str(mapped_col).lower().strip() not in col_set:
+                    is_compatible = False
+                    incompatibility_reasons.append(
+                        f"Required field '{meta['display_name']}' is mapped to column '{mapped_col}', which does not exist in the uploaded file headers."
+                    )
+    else:
+        is_compatible = False
+        incompatibility_reasons.append("No approved column mapping found for this source.")
+
     upload = Upload(
         source_id=source.id,
         partner_id=source.partner_id,
@@ -103,17 +141,18 @@ async def upload_file(
         file_hash=file_hash,
         file_size_bytes=len(content),
         row_count=total_rows,
-        mapping_version=mapping.version if mapping else None,
-        processing_status="processing" if mapping else "mapping_pending",
+        mapping_version=mapping.version if (mapping and is_compatible) else None,
+        processing_status="processing" if (mapping and is_compatible) else "mapping_pending",
         error_count=0,
+        retry_of_upload_id=prior_attempt.id if prior_attempt else None,
         uploaded_by=current_user.id
     )
     db.add(upload)
     db.commit()
     db.refresh(upload)
 
-    if mapping:
-        # Ingest immediately with approved mapping
+    if mapping and is_compatible:
+        # Ingest immediately with approved, verified compatible mapping
         ingestion_service = IngestionService(db)
         result = ingestion_service.process_upload(upload, df, mapping)
         return {
@@ -123,7 +162,7 @@ async def upload_file(
             "dropped_pii_columns": dropped_pii
         }
     else:
-        # Store in cache so user can review and approve mapping
+        # Store in cache so user can review, map, and approve mapping
         _PENDING_FILE_CACHE[str(upload.id)] = content
 
         # Extract representative samples for candidate columns from preview rows
@@ -135,18 +174,24 @@ async def upload_file(
         # Generate automated suggestions (Exact -> Fuzzy -> AI Fallback)
         mapping_suggestions = suggest_column_mappings(columns, source.source_type, samples_by_col=samples_by_col)
 
+        partner_display = f"{source.partner_id.title()} ({source.source_type.title()} Feed)"
         return {
             "type": "preview",
             "upload_id": upload.id,
+            "source_id": source.id,
+            "source_name": partner_display,
             "file_name": upload.file_name,
             "source_type": upload.source_type,
             "total_rows": total_rows,
             "detected_columns": columns,
             "dropped_pii_columns": dropped_pii,
-            "preview_rows": preview_rows,
+            "preview_rows": preview_rows[:10],
             "suggested_mapping": mapping_suggestions["suggestions"],
             "missing_required": mapping_suggestions["missing_required"],
             "canonical_fields": mapping_suggestions["canonical_fields"],
+            "active_mapping_version": mapping.version if mapping else None,
+            "is_mapping_compatible": is_compatible,
+            "incompatibility_reasons": incompatibility_reasons,
             "upload": UploadResponse.model_validate(upload).model_dump()
         }
 

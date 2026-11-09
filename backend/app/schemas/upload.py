@@ -18,6 +18,7 @@ class UploadResponse(BaseModel):
     mapping_version: Optional[int] = None
     processing_status: str
     error_count: int
+    retry_of_upload_id: Optional[uuid.UUID] = None
     uploaded_by: uuid.UUID
     created_at: datetime
     updated_at: datetime

@@ -67,7 +67,7 @@ CANONICAL_FIELDS: Dict[str, Dict[str, Any]] = {
         "required_for": ["freight"],
         "description": "Freight and logistics charges billed by the carrier",
         "aliases": [
-            "freight_amount", "shipping_fee", "freight_charge", "courier_charge",
+            "freight_amount", "freight_charges", "freight_charge", "shipping_fee", "courier_charge",
             "logistics_fee", "shipping_charges", "total_freight", "forward_charge",
             "rto_charge", "shipping_amount", "total_shipping_charges"
         ]

@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.models.claim import Claim
 from app.models.order_recon import OrderRecon
+from app.models.order_event import OrderEvent
 from app.services.rate_card_calculator import quantize_amount
 
 
@@ -36,6 +37,20 @@ class ClaimsGenerator:
             if recon.reason_codes:
                 claim_reason = recon.reason_codes[0]
 
+            # If claim is for a courier freight overcharge, attribute directly to the billing carrier partner
+            claim_partner = recon.partner_id
+            if claim_reason in ("freight_overcharge", "freight_overcharged") or (recon.freight_excess_component > 0 and claim_reason == "freight_overcharged"):
+                freight_ev = (
+                    self.db.query(OrderEvent)
+                    .filter(
+                        OrderEvent.external_order_id == recon.external_order_id,
+                        OrderEvent.event_type == "freight_charge"
+                    )
+                    .first()
+                )
+                if freight_ev and freight_ev.source_partner_id:
+                    claim_partner = freight_ev.source_partner_id
+
             existing_claim = (
                 self.db.query(Claim)
                 .filter(
@@ -47,7 +62,7 @@ class ClaimsGenerator:
 
             evidence = {
                 "order_id": recon.external_order_id,
-                "partner_id": recon.partner_id,
+                "partner_id": claim_partner,
                 "order_value": str(recon.order_value),
                 "expected_amount": str(recon.expected_amount) if recon.expected_amount is not None else None,
                 "received_amount": str(recon.received_amount),
@@ -66,6 +81,7 @@ class ClaimsGenerator:
                 existing_claim.evidence_json = evidence
                 if existing_claim.claim_status == "draft":
                     existing_claim.claim_amount = quantize_amount(recon.money_at_risk)
+                existing_claim.partner_id = claim_partner
                 self.db.add(existing_claim)
                 generated_claims.append(existing_claim)
             else:
@@ -73,7 +89,7 @@ class ClaimsGenerator:
                     order_recon_id=recon.id,
                     external_order_id=recon.external_order_id,
                     order_id=recon.external_order_id,
-                    partner_id=recon.partner_id,
+                    partner_id=claim_partner,
                     claim_amount=quantize_amount(recon.money_at_risk),
                     recovered_amount=quantize_amount(0.00),
                     claim_reason=claim_reason,

@@ -62,6 +62,17 @@ def get_column_mapping_suggestions(
     }
 
 
+def canonicalize_mapping_dict(d: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """Canonicalize mapping dict with trimmed keys/values and alphabetical key sorting."""
+    if not d:
+        return {}
+    cleaned = {}
+    for k, v in d.items():
+        if v is not None and str(v).strip() != "":
+            cleaned[str(k).strip()] = str(v).strip()
+    return dict(sorted(cleaned.items()))
+
+
 @router.post("/approve", response_model=ColumnMappingResponse, status_code=status.HTTP_201_CREATED)
 def approve_column_mapping(
     payload: ColumnMappingCreate,
@@ -72,8 +83,10 @@ def approve_column_mapping(
     Approve and activate a column mapping version.
     Per specification: Both Finance Executives and Co-founders have permission to approve column mappings.
     Enforces that all mandatory canonical fields for the source type are mapped.
+    Serializes source approvals with a row lock to prevent race conditions and duplicate versioning.
+    Idempotent: If the proposed mapping is identical to the active version, returns the active version without creating a new row.
     """
-    source = db.query(Source).filter(Source.id == payload.source_id).first()
+    source = db.query(Source).filter(Source.id == payload.source_id).with_for_update().first()
     if not source:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Source {payload.source_id} not found")
 
@@ -84,6 +97,33 @@ def approve_column_mapping(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Incomplete column mapping: Missing mandatory fields for {source.source_type}: {missing}"
         )
+
+    # Check currently active approved mapping
+    active_mapping = (
+        db.query(ColumnMapping)
+        .filter(ColumnMapping.source_id == source.id, ColumnMapping.status == "approved")
+        .order_by(desc(ColumnMapping.version))
+        .first()
+    )
+
+    if active_mapping:
+        proposed_canon = canonicalize_mapping_dict(payload.mapping_json)
+        active_canon = canonicalize_mapping_dict(active_mapping.mapping_json)
+        if proposed_canon == active_canon:
+            # Mapping is identical to active version; no new version created
+            return ColumnMappingResponse(
+                id=active_mapping.id,
+                source_id=active_mapping.source_id,
+                version=active_mapping.version,
+                mapping_json=active_mapping.mapping_json,
+                status=active_mapping.status,
+                created_by=active_mapping.created_by,
+                approved_by=active_mapping.approved_by,
+                approved_at=active_mapping.approved_at,
+                rolled_back_at=active_mapping.rolled_back_at,
+                created_at=active_mapping.created_at,
+                is_already_active=True
+            )
 
     # Determine next version
     max_ver = (
@@ -116,7 +156,7 @@ def approve_column_mapping(
     db.add(new_mapping)
     db.commit()
     db.refresh(new_mapping)
-    return new_mapping
+    return ColumnMappingResponse.model_validate(new_mapping)
 
 
 @router.get("/source/{source_id}", response_model=ColumnMappingResponse)

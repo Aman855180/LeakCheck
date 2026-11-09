@@ -17,6 +17,8 @@ interface ColumnMappingReviewProps {
   currentUser: User;
   sourceId: string;
   uploadId?: string;
+  sources?: Source[];
+  onSelectSource?: (sourceId: string) => void;
   onBackToUploads: () => void;
 }
 
@@ -24,8 +26,11 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
   currentUser,
   sourceId,
   uploadId,
+  sources: propSources,
+  onSelectSource,
   onBackToUploads,
 }) => {
+  const [sourcesList, setSourcesList] = useState<Source[]>(propSources || []);
   const [source, setSource] = useState<Source | null>(null);
   const [activeMapping, setActiveMapping] = useState<ColumnMapping | null>(null);
   const [versions, setVersions] = useState<ColumnMapping[]>([]);
@@ -34,6 +39,7 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
   const [sourceColumns, setSourceColumns] = useState<string[]>([]);
   const [canonicalFields, setCanonicalFields] = useState<any[]>([]);
   const [missingRequired, setMissingRequired] = useState<string[]>([]);
+  const [compatibilityWarning, setCompatibilityWarning] = useState<string | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -47,22 +53,29 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
   const loadData = async () => {
     setIsLoading(true);
     setFeedbackMessage(null);
+    setCompatibilityWarning(null);
     try {
-      const sources = await api.listSources();
-      const currentSrc = sources.find((s) => s.id === sourceId) || null;
+      let currentSources = propSources;
+      if (!currentSources || currentSources.length === 0) {
+        currentSources = await api.listSources();
+        setSourcesList(currentSources);
+      }
+      const currentSrc = currentSources.find((s) => s.id === sourceId) || currentSources[0] || null;
       setSource(currentSrc);
+
+      const targetSourceId = currentSrc ? currentSrc.id : sourceId;
 
       // Load active mapping & versions
       let currentActive: ColumnMapping | null = null;
       try {
-        currentActive = await api.getActiveMapping(sourceId);
+        currentActive = await api.getActiveMapping(targetSourceId);
         setActiveMapping(currentActive);
       } catch {
         setActiveMapping(null);
       }
 
       try {
-        const vers = await api.getMappingVersions(sourceId);
+        const vers = await api.getMappingVersions(targetSourceId);
         setVersions(vers);
       } catch {
         setVersions([]);
@@ -70,31 +83,56 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
 
       // If uploadId is provided, get upload details
       if (uploadId) {
-        await api.getUpload(uploadId);
+        try {
+          await api.getUpload(uploadId);
+        } catch {
+          // ignore error if upload detail cannot be loaded
+        }
       }
 
-      // Request suggestions with sample columns or active mapping
-      const initialColumns = currentActive
-        ? Object.values(currentActive.mapping_json)
-        : ['order_id', 'order_value', 'order_date', 'payment_mode', 'tracking_number', 'status'];
+      // Real-world sample export headers per source type
+      const defaultColsForSource: Record<string, string[]> = {
+        orders: ['Order ID', 'Total Price', 'Payment Method', 'Created At', 'order_id', 'order_value', 'order_date'],
+        settlement: ['order-id', 'settlement-amount', 'commission-fee', 'tcs-amount', 'tds-amount', 'settlement-date'],
+        cod: ['order_number', 'cod_amount', 'awb', 'remitted_at'],
+        freight: ['order_ref', 'freight_charges', 'waybill_no', 'shipment_status', 'invoice_date', 'order_id', 'freight_charge', 'awb', 'delivery_status'],
+        receipts: ['order_id', 'awb', 'receipt_date', 'status', 'warehouse_id'],
+      };
 
-      setSourceColumns(initialColumns);
+      const sourceKey = currentSrc?.source_type || 'orders';
+      const typicalCols = defaultColsForSource[sourceKey] || ['order_id', 'order_value', 'order_date'];
+      const activeCols = currentActive && currentActive.mapping_json ? Object.values(currentActive.mapping_json) : [];
+      const combinedCols = Array.from(new Set([...typicalCols, ...activeCols]));
 
-      const suggestRes = await api.suggestMapping(sourceId, initialColumns);
+      setSourceColumns(combinedCols);
+
+      const suggestRes = await api.suggestMapping(targetSourceId, combinedCols);
       setCanonicalFields(suggestRes.canonical_fields || []);
-      setMissingRequired(suggestRes.missing_required || []);
 
       const newMapping: Record<string, string> = {};
       const newConfidence: Record<string, any> = {};
 
-      // If active mapping exists, populate with active mapping
+      // Check if current active mapping is compatible with incoming headers
+      let hasHeaderMismatch = false;
       if (currentActive && currentActive.mapping_json) {
+        const mappedVals = Object.values(currentActive.mapping_json);
+        const lowerTypical = typicalCols.map((c) => c.toLowerCase().trim());
+        const incompatibleMapped = mappedVals.filter((c) => !lowerTypical.includes(c.toLowerCase().trim()));
+        if (incompatibleMapped.length > 0) {
+          hasHeaderMismatch = true;
+          setCompatibilityWarning(
+            `Active mapping v${currentActive.version} is mapped to '${incompatibleMapped.join(', ')}' which does not match standard export headers. Pre-populating recommended matches below.`
+          );
+        }
+      }
+
+      if (currentActive && currentActive.mapping_json && !hasHeaderMismatch) {
         Object.entries(currentActive.mapping_json).forEach(([k, col]) => {
           newMapping[k] = col;
           newConfidence[k] = { confidence: 1.0, match_type: 'APPROVED_VERSION' };
         });
       } else {
-        // Use AI suggestions
+        // Use exact/fuzzy suggested mappings
         Object.entries(suggestRes.suggestions).forEach(([k, val]: [string, any]) => {
           if (val.column) {
             newMapping[k] = val.column;
@@ -105,6 +143,13 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
 
       setMappingState(newMapping);
       setConfidenceState(newConfidence);
+
+      // Recompute missing required for current source type
+      const requiredForSource = (suggestRes.canonical_fields || [])
+        .filter((f: any) => f.required_for?.includes(sourceKey))
+        .map((f: any) => f.key);
+      const missing = requiredForSource.filter((k: string) => !newMapping[k]);
+      setMissingRequired(missing);
     } catch (err: any) {
       console.error('Failed to load mapping data:', err);
       setFeedbackMessage({ type: 'error', text: err.message || 'Failed to load column mapping data.' });
@@ -138,16 +183,40 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
     }
   };
 
+  const isMappingIdentical = React.useMemo(() => {
+    if (!activeMapping || !activeMapping.mapping_json) return false;
+    const cleanProposed: Record<string, string> = {};
+    for (const [k, v] of Object.entries(mappingState)) {
+      if (v && v.trim()) cleanProposed[k.trim()] = v.trim();
+    }
+    const cleanActive: Record<string, string> = {};
+    for (const [k, v] of Object.entries(activeMapping.mapping_json)) {
+      if (v && v.trim()) cleanActive[k.trim()] = v.trim();
+    }
+    const propKeys = Object.keys(cleanProposed).sort();
+    const actKeys = Object.keys(cleanActive).sort();
+    if (propKeys.length !== actKeys.length) return false;
+    return propKeys.every((k) => cleanProposed[k] === cleanActive[k]);
+  }, [activeMapping, mappingState]);
+
   const handleApproveMapping = async () => {
+    if (isSaving || isMappingIdentical) return;
     setIsSaving(true);
     setFeedbackMessage(null);
     try {
       const approved = await api.approveMapping(sourceId, mappingState);
       setActiveMapping(approved);
-      setFeedbackMessage({
-        type: 'success',
-        text: `Mapping v${approved.version} successfully approved by ${currentUser.role === 'cofounder' ? 'Co-founder' : 'Finance Executive'}!`,
-      });
+      if (approved.is_already_active) {
+        setFeedbackMessage({
+          type: 'success',
+          text: `This column mapping configuration is already active (Version ${approved.version}). No new version created.`,
+        });
+      } else {
+        setFeedbackMessage({
+          type: 'success',
+          text: `Mapping v${approved.version} successfully approved by ${currentUser.role === 'cofounder' ? 'Co-founder' : 'Finance Executive'}!`,
+        });
+      }
 
       // Reload versions
       const vers = await api.getMappingVersions(sourceId);
@@ -271,6 +340,42 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
           <p className="text-sm text-slate-600 mt-1">
             Map partner-specific column headers to LeakCheck canonical fields with exact & fuzzy auto-matching.
           </p>
+
+          {/* Source Selector Controls */}
+          <div className="flex flex-wrap items-center gap-2.5 mt-3">
+            <label className="text-xs font-semibold text-slate-700">Data Feed Source:</label>
+            <select
+              value={source?.id || sourceId}
+              onChange={(e) => {
+                if (onSelectSource) {
+                  onSelectSource(e.target.value);
+                }
+              }}
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500 shadow-sm"
+            >
+              {sourcesList.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.source_type.toUpperCase()})
+                </option>
+              ))}
+            </select>
+
+            {source && (
+              <span className="px-2.5 py-1 rounded text-[11px] font-mono font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                {source.partner_id.toUpperCase()} • {source.source_type.toUpperCase()}
+              </span>
+            )}
+
+            {activeMapping ? (
+              <span className="px-2.5 py-1 rounded text-[11px] font-mono font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                v{activeMapping.version} Active
+              </span>
+            ) : (
+              <span className="px-2.5 py-1 rounded text-[11px] font-mono font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                Draft (No Active Version)
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -287,11 +392,19 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
 
           <button
             onClick={handleApproveMapping}
-            disabled={isSaving || missingRequired.length > 0}
-            className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-all shadow-sm"
+            disabled={isSaving || missingRequired.length > 0 || isMappingIdentical}
+            className={`inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-semibold transition-all shadow-sm ${
+              isMappingIdentical
+                ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
+                : 'bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50'
+            }`}
           >
             <CheckCircle2 className="w-4 h-4" />
-            {isSaving ? 'Activating...' : `Approve & Activate (v${(activeMapping?.version || 0) + 1})`}
+            {isSaving
+              ? 'Activating...'
+              : isMappingIdentical
+              ? `Already Active (v${activeMapping?.version})`
+              : `Approve & Activate (v${(activeMapping?.version || 0) + 1})`}
           </button>
         </div>
       </div>
@@ -311,6 +424,17 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
             <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0" />
           )}
           <div>{feedbackMessage.text}</div>
+        </div>
+      )}
+
+      {/* Compatibility Notice */}
+      {compatibilityWarning && (
+        <div className="p-4 bg-sky-50 border border-sky-300 rounded-lg text-sm text-sky-900 flex items-start gap-2">
+          <Sparkles className="w-5 h-5 text-sky-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold">Schema Update Recommended:</p>
+            <p className="mt-0.5">{compatibilityWarning}</p>
+          </div>
         </div>
       )}
 

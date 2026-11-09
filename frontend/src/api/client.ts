@@ -53,6 +53,8 @@ export interface Upload {
 export interface UploadPreview {
   type: 'preview' | 'completed';
   upload_id: string;
+  source_id?: string;
+  source_name?: string;
   file_name: string;
   source_type: string;
   total_rows: number;
@@ -62,6 +64,9 @@ export interface UploadPreview {
   suggested_mapping: Record<string, { column: string | null; confidence: number; match_type: string }>;
   missing_required: string[];
   canonical_fields: { key: string; display_name: string; required_for: string[]; description: string }[];
+  is_mapping_compatible?: boolean;
+  incompatibility_reasons?: string[];
+  active_mapping_version?: number | null;
   upload: Upload;
   summary?: any;
 }
@@ -87,6 +92,7 @@ export interface ColumnMapping {
   approved_at: string | null;
   rolled_back_at: string | null;
   created_at: string;
+  is_already_active?: boolean;
 }
 
 export interface OrderRecon {

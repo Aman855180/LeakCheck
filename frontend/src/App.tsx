@@ -107,11 +107,12 @@ export const App: React.FC = () => {
               <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-sm">
                 <ShieldCheck className="w-5 h-5" />
               </div>
-              <div>
+              <div className="flex items-center">
                 <span className="text-lg font-bold tracking-tight text-slate-900 font-mono">
                   Leak<span className="text-indigo-600">Check</span>
                 </span>
-                <span className="ml-2 px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
+                <span className="ml-2 inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-mono rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold whitespace-nowrap">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                   v1.0.0 Ready
                 </span>
               </div>
@@ -258,6 +259,8 @@ export const App: React.FC = () => {
             currentUser={currentUser}
             sourceId={selectedMappingSourceId || (sources[0]?.id || '')}
             uploadId={selectedUploadId}
+            sources={sources}
+            onSelectSource={(newSourceId) => setSelectedMappingSourceId(newSourceId)}
             onBackToUploads={() => setActiveTab('uploads')}
           />
         )}
