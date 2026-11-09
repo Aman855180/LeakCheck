@@ -25,14 +25,26 @@ class UploadResponse(BaseModel):
 
 
 class UploadPreviewResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    type: str = "preview"
     upload_id: uuid.UUID
+    source_id: uuid.UUID
+    source_name: Optional[str] = None
     file_name: str
     source_type: str
+    processing_status: str
     total_rows: int
     detected_columns: List[str]
-    dropped_pii_columns: List[str]
-    preview_rows: List[Dict[str, Any]]
+    dropped_pii_columns: List[str] = []
+    preview_rows: List[Dict[str, Any]] = []
     suggested_mapping: Dict[str, Any]
+    missing_required: List[str] = []
+    canonical_fields: List[Dict[str, Any]] = []
+    is_mapping_compatible: bool = False
+    incompatibility_reasons: List[str] = []
+    active_mapping_version: Optional[int] = None
+    upload: Optional[UploadResponse] = None
 
 
 class UploadRowErrorResponse(BaseModel):

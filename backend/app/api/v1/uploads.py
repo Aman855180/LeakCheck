@@ -11,6 +11,7 @@ from app.api.deps import require_role
 from app.models.user import User
 from app.models.source import Source
 from app.models.upload import Upload
+from app.models.upload_mapping_suggestion import UploadMappingSuggestion
 from app.models.column_mapping import ColumnMapping
 from app.models.upload_row_error import UploadRowError
 from app.schemas.upload import UploadResponse, UploadPreviewResponse, UploadRowErrorResponse
@@ -21,6 +22,11 @@ from app.services.file_parser import (
 )
 from app.services.column_mapper import suggest_column_mappings, CANONICAL_FIELDS
 from app.services.ingestion_service import IngestionService
+from app.services.pending_file_storage import (
+    save_pending_file_to_disk,
+    read_pending_file_from_disk,
+    delete_pending_file_from_disk
+)
 
 router = APIRouter(prefix="/uploads", tags=["Uploads"])
 
@@ -152,17 +158,56 @@ async def upload_file(
     db.refresh(upload)
 
     if mapping and is_compatible:
+        # Persist upload-specific mapping review information for complete auditability
+        db_suggestion = UploadMappingSuggestion(
+            upload_id=upload.id,
+            source_id=source.id,
+            file_name=upload.file_name,
+            source_type=upload.source_type,
+            total_rows=total_rows,
+            detected_columns=columns,
+            dropped_pii_columns=dropped_pii,
+            preview_rows=preview_rows[:10],
+            suggested_mapping={
+                f_key: {
+                    "column": mapping.mapping_json.get(f_key),
+                    "confidence": 1.0,
+                    "match_type": "EXACT" if mapping.mapping_json.get(f_key) in columns else "APPROVED_VERSION"
+                }
+                for f_key in CANONICAL_FIELDS.keys()
+                if mapping.mapping_json.get(f_key)
+            },
+            missing_required=[],
+            canonical_fields=[
+                {
+                    "key": k,
+                    "display_name": v["display_name"],
+                    "required_for": v["required_for"],
+                    "description": v["description"]
+                }
+                for k, v in CANONICAL_FIELDS.items()
+            ],
+            is_mapping_compatible=True,
+            incompatibility_reasons=[],
+            active_mapping_version=mapping.version,
+            generation_status="completed"
+        )
+        db.add(db_suggestion)
+        db.commit()
+
         # Ingest immediately with approved, verified compatible mapping
         ingestion_service = IngestionService(db)
         result = ingestion_service.process_upload(upload, df, mapping)
         return {
             "type": "completed",
+            "upload_id": upload.id,
             "upload": UploadResponse.model_validate(upload).model_dump(),
             "summary": result,
             "dropped_pii_columns": dropped_pii
         }
     else:
-        # Store in cache so user can review, map, and approve mapping
+        # Store in cache and durable disk storage so user can review, map, and approve mapping
+        save_pending_file_to_disk(str(upload.id), content)
         _PENDING_FILE_CACHE[str(upload.id)] = content
 
         # Extract representative samples for candidate columns from preview rows
@@ -173,6 +218,27 @@ async def upload_file(
 
         # Generate automated suggestions (Exact -> Fuzzy -> AI Fallback)
         mapping_suggestions = suggest_column_mappings(columns, source.source_type, samples_by_col=samples_by_col)
+
+        # Persist upload-specific mapping review suggestion to database
+        db_suggestion = UploadMappingSuggestion(
+            upload_id=upload.id,
+            source_id=source.id,
+            file_name=upload.file_name,
+            source_type=upload.source_type,
+            total_rows=total_rows,
+            detected_columns=columns,
+            dropped_pii_columns=dropped_pii,
+            preview_rows=preview_rows[:10],
+            suggested_mapping=mapping_suggestions["suggestions"],
+            missing_required=mapping_suggestions["missing_required"],
+            canonical_fields=mapping_suggestions["canonical_fields"],
+            is_mapping_compatible=is_compatible,
+            incompatibility_reasons=incompatibility_reasons,
+            active_mapping_version=mapping.version if mapping else None,
+            generation_status="completed"
+        )
+        db.add(db_suggestion)
+        db.commit()
 
         partner_display = f"{source.partner_id.title()} ({source.source_type.title()} Feed)"
         return {
@@ -230,6 +296,146 @@ def get_upload_details(
     if not upload:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Upload {upload_id} not found")
     return upload
+
+
+@router.get("/{upload_id}/preview", response_model=UploadPreviewResponse)
+def get_upload_preview(
+    upload_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(["finance_exec", "cofounder"]))
+):
+    """
+    Retrieve persisted column mapping review and preview details for an upload.
+    Enforces RBAC: Both finance_exec and cofounder can view preview data.
+    Never approves mappings, never triggers ingestion, and never calls Gemini if
+    suggestions already exist for this upload.
+    """
+    try:
+        u_uuid = uuid.UUID(upload_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid upload_id format")
+
+    upload = db.query(Upload).filter(Upload.id == u_uuid).first()
+    if not upload:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Upload {upload_id} not found")
+
+    source = db.query(Source).filter(Source.id == upload.source_id).first()
+    partner_display = f"{source.partner_id.title()} ({source.source_type.title()} Feed)" if source else upload.source_type.title()
+
+    # 1. First check persisted suggestion record in database
+    suggestion = db.query(UploadMappingSuggestion).filter(UploadMappingSuggestion.upload_id == upload.id).first()
+    if suggestion:
+        return UploadPreviewResponse(
+            type="preview",
+            upload_id=upload.id,
+            source_id=upload.source_id,
+            source_name=partner_display,
+            file_name=upload.file_name,
+            source_type=upload.source_type,
+            processing_status=upload.processing_status,
+            total_rows=upload.row_count,
+            detected_columns=suggestion.detected_columns,
+            dropped_pii_columns=suggestion.dropped_pii_columns,
+            preview_rows=suggestion.preview_rows,
+            suggested_mapping=suggestion.suggested_mapping,
+            missing_required=suggestion.missing_required,
+            canonical_fields=suggestion.canonical_fields,
+            is_mapping_compatible=suggestion.is_mapping_compatible,
+            incompatibility_reasons=suggestion.incompatibility_reasons,
+            active_mapping_version=suggestion.active_mapping_version,
+            upload=UploadResponse.model_validate(upload)
+        )
+
+    # 2. If not yet in DB, check memory cache then durable disk storage
+    content = _PENDING_FILE_CACHE.get(str(upload.id))
+    if not content:
+        content = read_pending_file_from_disk(str(upload.id))
+        if content:
+            _PENDING_FILE_CACHE[str(upload.id)] = content
+
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Raw file content expired from temporary buffer and no persisted suggestions exist. Please re-upload the file."
+        )
+
+    # Parse and compute suggestions once, then persist in DB
+    try:
+        df, columns, preview_rows, total_rows, dropped_pii = parse_tabular_file(content, upload.file_name)
+    except FileValidationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+
+    samples_by_col = {
+        c: [row[c] for row in preview_rows if c in row and row[c] is not None][:5]
+        for c in columns
+    }
+    mapping_suggestions = suggest_column_mappings(columns, upload.source_type, samples_by_col=samples_by_col)
+
+    # Check compatibility with active mapping if any
+    active_map = (
+        db.query(ColumnMapping)
+        .filter(ColumnMapping.source_id == upload.source_id, ColumnMapping.status == "approved")
+        .order_by(desc(ColumnMapping.version))
+        .first()
+    )
+    is_compat = True if active_map else False
+    incompat_reasons: List[str] = []
+    if active_map and active_map.mapping_json:
+        col_set = {c.lower().strip() for c in columns}
+        for field_key, meta in CANONICAL_FIELDS.items():
+            if upload.source_type in meta.get("required_for", []):
+                mapped_col = active_map.mapping_json.get(field_key)
+                if not mapped_col or str(mapped_col).strip() == "":
+                    is_compat = False
+                    incompat_reasons.append(f"Required field '{meta['display_name']}' is not mapped.")
+                elif str(mapped_col).lower().strip() not in col_set:
+                    is_compat = False
+                    incompat_reasons.append(f"Required field '{meta['display_name']}' mapped to '{mapped_col}' missing.")
+    else:
+        is_compat = False
+        incompat_reasons.append("No approved column mapping found for this source.")
+
+    new_suggestion = UploadMappingSuggestion(
+        upload_id=upload.id,
+        source_id=upload.source_id,
+        file_name=upload.file_name,
+        source_type=upload.source_type,
+        total_rows=total_rows,
+        detected_columns=columns,
+        dropped_pii_columns=dropped_pii,
+        preview_rows=preview_rows[:10],
+        suggested_mapping=mapping_suggestions["suggestions"],
+        missing_required=mapping_suggestions["missing_required"],
+        canonical_fields=mapping_suggestions["canonical_fields"],
+        is_mapping_compatible=is_compat,
+        incompatibility_reasons=incompat_reasons,
+        active_mapping_version=active_map.version if active_map else None,
+        generation_status="completed"
+    )
+    db.add(new_suggestion)
+    db.commit()
+    db.refresh(new_suggestion)
+
+    return UploadPreviewResponse(
+        type="preview",
+        upload_id=upload.id,
+        source_id=upload.source_id,
+        source_name=partner_display,
+        file_name=upload.file_name,
+        source_type=upload.source_type,
+        processing_status=upload.processing_status,
+        total_rows=total_rows,
+        detected_columns=columns,
+        dropped_pii_columns=dropped_pii,
+        preview_rows=preview_rows[:10],
+        suggested_mapping=mapping_suggestions["suggestions"],
+        missing_required=mapping_suggestions["missing_required"],
+        canonical_fields=mapping_suggestions["canonical_fields"],
+        is_mapping_compatible=is_compat,
+        incompatibility_reasons=incompat_reasons,
+        active_mapping_version=active_map.version if active_map else None,
+        upload=UploadResponse.model_validate(upload)
+    )
 
 
 @router.get("/{upload_id}/errors", response_model=List[UploadRowErrorResponse])
@@ -290,6 +496,11 @@ def process_pending_upload(
 
     content = _PENDING_FILE_CACHE.get(str(upload.id))
     if not content:
+        content = read_pending_file_from_disk(str(upload.id))
+        if content:
+            _PENDING_FILE_CACHE[str(upload.id)] = content
+
+    if not content:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail="Raw file content expired from temporary buffer. Please re-upload the file."
@@ -301,8 +512,9 @@ def process_pending_upload(
     ingestion_service = IngestionService(db)
     result = ingestion_service.process_upload(upload, df, mapping)
 
-    # Clean up memory buffer
+    # Clean up memory buffer and disk file
     _PENDING_FILE_CACHE.pop(str(upload.id), None)
+    delete_pending_file_from_disk(str(upload.id))
 
     return {
         "status": "success",

@@ -9,9 +9,10 @@ import {
   Sparkles,
   ArrowLeft,
   RefreshCw,
-  Play
+  Play,
+  FileSpreadsheet
 } from 'lucide-react';
-import { api, Source, ColumnMapping, User } from '../api/client';
+import { api, Source, ColumnMapping, User, UploadPreview } from '../api/client';
 
 interface ColumnMappingReviewProps {
   currentUser: User;
@@ -20,6 +21,65 @@ interface ColumnMappingReviewProps {
   sources?: Source[];
   onSelectSource?: (sourceId: string) => void;
   onBackToUploads: () => void;
+}
+
+export interface UploadValidationResult {
+  missing: string[];
+  warning: string | null;
+}
+
+export function validateUploadMapping(
+  mapping: Record<string, string>,
+  detectedColumns: string[],
+  canonicalFieldsList: any[],
+  sourceType: string
+): UploadValidationResult {
+  const detectedNormalized = new Set(
+    (detectedColumns || []).map((c) => c.toLowerCase().trim())
+  );
+  const requiredFields = (canonicalFieldsList || []).filter((f) =>
+    f.required_for?.includes(sourceType)
+  );
+
+  const missing: string[] = [];
+  const invalidMappings: string[] = [];
+
+  for (const field of requiredFields) {
+    const mappedCol = mapping[field.key];
+    if (!mappedCol || !mappedCol.trim()) {
+      missing.push(field.key);
+    } else if (!detectedNormalized.has(mappedCol.toLowerCase().trim())) {
+      missing.push(field.key);
+      invalidMappings.push(
+        `Required field '${field.display_name}' is mapped to '${mappedCol}', which is not present in the uploaded workbook headers.`
+      );
+    }
+  }
+
+  // Also verify that any optional field is not mapped to a non-existent header
+  for (const [key, col] of Object.entries(mapping)) {
+    if (col && col.trim() && !detectedNormalized.has(col.toLowerCase().trim())) {
+      if (!requiredFields.some((f) => f.key === key)) {
+        const fieldMeta = canonicalFieldsList.find((f) => f.key === key);
+        const name = fieldMeta?.display_name || key;
+        invalidMappings.push(
+          `Field '${name}' is mapped to '${col}', which is not present in the uploaded workbook headers.`
+        );
+      }
+    }
+  }
+
+  let warning: string | null = null;
+  if (invalidMappings.length > 0) {
+    warning = invalidMappings.join(' ');
+  } else if (missing.length > 0) {
+    const missingNames = missing.map(
+      (k) => canonicalFieldsList.find((f) => f.key === k)?.display_name || k
+    );
+    warning = `Workbook column mapping requires review: Missing required fields (${missingNames.join(', ')}) for ${sourceType.toUpperCase()} feed.`;
+  }
+
+  return { missing, warning };
 }
 
 export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
@@ -35,11 +95,15 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
   const [activeMapping, setActiveMapping] = useState<ColumnMapping | null>(null);
   const [versions, setVersions] = useState<ColumnMapping[]>([]);
   const [mappingState, setMappingState] = useState<Record<string, string>>({});
-  const [confidenceState, setConfidenceState] = useState<Record<string, { confidence: number; match_type: string }>>({});
+  const [confidenceState, setConfidenceState] = useState<Record<string, { confidence: number; match_type: string; uncertain?: boolean }>>({});
   const [sourceColumns, setSourceColumns] = useState<string[]>([]);
   const [canonicalFields, setCanonicalFields] = useState<any[]>([]);
   const [missingRequired, setMissingRequired] = useState<string[]>([]);
   const [compatibilityWarning, setCompatibilityWarning] = useState<string | null>(null);
+
+  // Upload-specific review state
+  const [uploadPreview, setUploadPreview] = useState<UploadPreview | null>(null);
+  const [uploadErrorDetail, setUploadErrorDetail] = useState<string | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -48,12 +112,15 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
 
   useEffect(() => {
     loadData();
-  }, [sourceId]);
+  }, [sourceId, uploadId]);
 
   const loadData = async () => {
     setIsLoading(true);
     setFeedbackMessage(null);
     setCompatibilityWarning(null);
+    setUploadErrorDetail(null);
+    setUploadPreview(null);
+
     try {
       let currentSources = propSources;
       if (!currentSources || currentSources.length === 0) {
@@ -65,7 +132,7 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
 
       const targetSourceId = currentSrc ? currentSrc.id : sourceId;
 
-      // Load active mapping & versions
+      // Always load active mapping & historical versions for reference and approval workflows
       let currentActive: ColumnMapping | null = null;
       try {
         currentActive = await api.getActiveMapping(targetSourceId);
@@ -81,75 +148,124 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
         setVersions([]);
       }
 
-      // If uploadId is provided, get upload details
       if (uploadId) {
+        // =========================================================================
+        // MODE A: Upload-Specific Review
+        // Strictly fetch and display the exact upload's detected headers, preview rows,
+        // and persisted suggestions. Never load hardcoded samples or active mapping v7!
+        // =========================================================================
         try {
-          await api.getUpload(uploadId);
-        } catch {
-          // ignore error if upload detail cannot be loaded
-        }
-      }
+          const previewRes = await api.getUploadPreview(uploadId);
+          setUploadPreview(previewRes);
+          setSourceColumns(previewRes.detected_columns || []);
+          setCanonicalFields(previewRes.canonical_fields || []);
 
-      // Real-world sample export headers per source type
-      const defaultColsForSource: Record<string, string[]> = {
-        orders: ['Order ID', 'Total Price', 'Payment Method', 'Created At', 'order_id', 'order_value', 'order_date'],
-        settlement: ['order-id', 'settlement-amount', 'commission-fee', 'tcs-amount', 'tds-amount', 'settlement-date'],
-        cod: ['order_number', 'cod_amount', 'awb', 'remitted_at'],
-        freight: ['order_ref', 'freight_charges', 'waybill_no', 'shipment_status', 'invoice_date', 'order_id', 'freight_charge', 'awb', 'delivery_status'],
-        receipts: ['order_id', 'awb', 'receipt_date', 'status', 'warehouse_id'],
-      };
+          const newMapping: Record<string, string> = {};
+          const newConfidence: Record<string, any> = {};
 
-      const sourceKey = currentSrc?.source_type || 'orders';
-      const typicalCols = defaultColsForSource[sourceKey] || ['order_id', 'order_value', 'order_date'];
-      const activeCols = currentActive && currentActive.mapping_json ? Object.values(currentActive.mapping_json) : [];
-      const combinedCols = Array.from(new Set([...typicalCols, ...activeCols]));
-
-      setSourceColumns(combinedCols);
-
-      const suggestRes = await api.suggestMapping(targetSourceId, combinedCols);
-      setCanonicalFields(suggestRes.canonical_fields || []);
-
-      const newMapping: Record<string, string> = {};
-      const newConfidence: Record<string, any> = {};
-
-      // Check if current active mapping is compatible with incoming headers
-      let hasHeaderMismatch = false;
-      if (currentActive && currentActive.mapping_json) {
-        const mappedVals = Object.values(currentActive.mapping_json);
-        const lowerTypical = typicalCols.map((c) => c.toLowerCase().trim());
-        const incompatibleMapped = mappedVals.filter((c) => !lowerTypical.includes(c.toLowerCase().trim()));
-        if (incompatibleMapped.length > 0) {
-          hasHeaderMismatch = true;
-          setCompatibilityWarning(
-            `Active mapping v${currentActive.version} is mapped to '${incompatibleMapped.join(', ')}' which does not match standard export headers. Pre-populating recommended matches below.`
-          );
-        }
-      }
-
-      if (currentActive && currentActive.mapping_json && !hasHeaderMismatch) {
-        Object.entries(currentActive.mapping_json).forEach(([k, col]) => {
-          newMapping[k] = col;
-          newConfidence[k] = { confidence: 1.0, match_type: 'APPROVED_VERSION' };
-        });
-      } else {
-        // Use exact/fuzzy suggested mappings
-        Object.entries(suggestRes.suggestions).forEach(([k, val]: [string, any]) => {
-          if (val.column) {
-            newMapping[k] = val.column;
-            newConfidence[k] = { confidence: val.confidence, match_type: val.match_type };
+          if (previewRes.suggested_mapping) {
+            Object.entries(previewRes.suggested_mapping).forEach(([k, val]: [string, any]) => {
+              if (val && val.column) {
+                newMapping[k] = val.column;
+                newConfidence[k] = {
+                  confidence: val.confidence,
+                  match_type: val.match_type,
+                  uncertain: val.uncertain,
+                  reasoning: val.reasoning,
+                };
+              }
+            });
           }
-        });
+
+          setMappingState(newMapping);
+          setConfidenceState(newConfidence);
+
+          // Calculate missing required fields and schema compatibility strictly from upload headers and mappings
+          const { missing, warning } = validateUploadMapping(
+            newMapping,
+            previewRes.detected_columns || [],
+            previewRes.canonical_fields || [],
+            previewRes.source_type || currentSrc?.source_type || 'orders'
+          );
+          setMissingRequired(missing);
+          setCompatibilityWarning(warning);
+        } catch (err: any) {
+          console.error('Failed to load upload preview:', err);
+          const errMsg = err.message || 'Failed to retrieve preview for this upload.';
+          setUploadErrorDetail(errMsg);
+          setFeedbackMessage({
+            type: 'error',
+            text: `Upload preview unavailable: ${errMsg}`
+          });
+          // Strict isolation guarantee: do NOT fall back to generic sample data
+          setSourceColumns([]);
+          setCanonicalFields([]);
+          setMappingState({});
+          setConfidenceState({});
+          setMissingRequired([]);
+        }
+      } else {
+        // =========================================================================
+        // MODE B: General Source-Level Mapping Editor
+        // Preserve existing source-level mapping editor, template editing, and rollback.
+        // =========================================================================
+        const defaultColsForSource: Record<string, string[]> = {
+          orders: ['Order ID', 'Total Price', 'Payment Method', 'Created At', 'order_id', 'order_value', 'order_date'],
+          settlement: ['order-id', 'settlement-amount', 'commission-fee', 'tcs-amount', 'tds-amount', 'settlement-date'],
+          cod: ['order_number', 'cod_amount', 'awb', 'remitted_at'],
+          freight: ['order_ref', 'freight_charges', 'waybill_no', 'shipment_status', 'invoice_date', 'order_id', 'freight_charge', 'awb', 'delivery_status'],
+          receipts: ['order_id', 'awb', 'receipt_date', 'status', 'warehouse_id'],
+        };
+
+        const sourceKey = currentSrc?.source_type || 'orders';
+        const typicalCols = defaultColsForSource[sourceKey] || ['order_id', 'order_value', 'order_date'];
+        const activeCols = currentActive && currentActive.mapping_json ? Object.values(currentActive.mapping_json) : [];
+        const combinedCols = Array.from(new Set([...typicalCols, ...activeCols]));
+
+        setSourceColumns(combinedCols);
+
+        const suggestRes = await api.suggestMapping(targetSourceId, combinedCols);
+        setCanonicalFields(suggestRes.canonical_fields || []);
+
+        const newMapping: Record<string, string> = {};
+        const newConfidence: Record<string, any> = {};
+
+        let hasHeaderMismatch = false;
+        if (currentActive && currentActive.mapping_json) {
+          const mappedVals = Object.values(currentActive.mapping_json);
+          const lowerTypical = typicalCols.map((c) => c.toLowerCase().trim());
+          const incompatibleMapped = mappedVals.filter((c) => !lowerTypical.includes(c.toLowerCase().trim()));
+          if (incompatibleMapped.length > 0) {
+            hasHeaderMismatch = true;
+            setCompatibilityWarning(
+              `Active mapping v${currentActive.version} is mapped to '${incompatibleMapped.join(', ')}' which does not match standard export headers. Pre-populating recommended matches below.`
+            );
+          }
+        }
+
+        if (currentActive && currentActive.mapping_json && !hasHeaderMismatch) {
+          Object.entries(currentActive.mapping_json).forEach(([k, col]) => {
+            newMapping[k] = col;
+            newConfidence[k] = { confidence: 1.0, match_type: 'APPROVED_VERSION' };
+          });
+        } else {
+          Object.entries(suggestRes.suggestions).forEach(([k, val]: [string, any]) => {
+            if (val.column) {
+              newMapping[k] = val.column;
+              newConfidence[k] = { confidence: val.confidence, match_type: val.match_type };
+            }
+          });
+        }
+
+        setMappingState(newMapping);
+        setConfidenceState(newConfidence);
+
+        const requiredForSource = (suggestRes.canonical_fields || [])
+          .filter((f: any) => f.required_for?.includes(sourceKey))
+          .map((f: any) => f.key);
+        const missing = requiredForSource.filter((k: string) => !newMapping[k]);
+        setMissingRequired(missing);
       }
-
-      setMappingState(newMapping);
-      setConfidenceState(newConfidence);
-
-      // Recompute missing required for current source type
-      const requiredForSource = (suggestRes.canonical_fields || [])
-        .filter((f: any) => f.required_for?.includes(sourceKey))
-        .map((f: any) => f.key);
-      const missing = requiredForSource.filter((k: string) => !newMapping[k]);
-      setMissingRequired(missing);
     } catch (err: any) {
       console.error('Failed to load mapping data:', err);
       setFeedbackMessage({ type: 'error', text: err.message || 'Failed to load column mapping data.' });
@@ -173,8 +289,18 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
       [fieldKey]: { confidence: 1.0, match_type: 'MANUAL' },
     });
 
-    // Check missing required
-    if (source) {
+    if (uploadId) {
+      // MODE A: Recalculate using upload-specific headers and mappings
+      const { missing, warning } = validateUploadMapping(
+        updated,
+        sourceColumns,
+        canonicalFields,
+        source?.source_type || 'orders'
+      );
+      setMissingRequired(missing);
+      setCompatibilityWarning(warning);
+    } else if (source) {
+      // MODE B: General source-level mapping editor
       const requiredForSource = canonicalFields
         .filter((f) => f.required_for?.includes(source.source_type))
         .map((f) => f.key);
@@ -270,7 +396,8 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
 
   const renderBadge = (fieldKey: string) => {
     const conf = confidenceState[fieldKey];
-    if (!conf || !mappingState[fieldKey]) {
+    const mappedCol = mappingState[fieldKey];
+    if (!conf || !mappedCol) {
       return (
         <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
           Unmapped
@@ -278,21 +405,34 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
       );
     }
 
-    if (conf.match_type === 'EXACT') {
+    const matchType = (conf.match_type || '').toUpperCase();
+    const pct = Math.round((conf.confidence || 0) * 100);
+
+    if (matchType === 'EXACT') {
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
           <Sparkles className="w-3 h-3 text-emerald-600" /> Exact Match (100%)
         </span>
       );
     }
-    if (conf.match_type === 'FUZZY') {
+
+    if (matchType === 'FUZZY') {
+      const isReviewRequired = conf.confidence < 0.80;
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-100 text-blue-800 border border-blue-300">
-          <Sparkles className="w-3 h-3 text-blue-600" /> Fuzzy ({Math.round(conf.confidence * 100)}%)
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border ${
+            isReviewRequired
+              ? 'bg-amber-100 text-amber-800 border-amber-300'
+              : 'bg-blue-100 text-blue-800 border-blue-300'
+          }`}
+        >
+          <Sparkles className={`w-3 h-3 ${isReviewRequired ? 'text-amber-600' : 'text-blue-600'}`} />
+          {isReviewRequired ? 'RapidFuzz Match (Review Required)' : 'RapidFuzz Match'} ({pct}%)
         </span>
       );
     }
-    if (conf.match_type === 'AI_SUGGESTED') {
+
+    if (matchType === 'AI' || matchType === 'AI_SUGGESTED') {
       const isUncertain = conf.confidence < 0.80 || (conf as any).uncertain;
       return (
         <span
@@ -303,17 +443,19 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
           }`}
         >
           <Sparkles className={`w-3 h-3 ${isUncertain ? 'text-amber-600' : 'text-violet-600'}`} />
-          {isUncertain ? 'AI Review Required' : 'AI Suggested'} ({Math.round(conf.confidence * 100)}%)
+          {isUncertain ? 'AI Review Required' : 'Gemini AI Suggested'} ({pct}%)
         </span>
       );
     }
-    if (conf.match_type === 'MANUAL') {
+
+    if (matchType === 'MANUAL') {
       return (
         <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-purple-100 text-purple-800 border border-purple-300">
           Manual Override
         </span>
       );
     }
+
     return (
       <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
         Approved v{activeMapping?.version}
@@ -343,10 +485,12 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
           </button>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
             <Layers className="w-7 h-7 text-indigo-600" />
-            Column Mapping Review: {source?.name || 'Feed'}
+            {uploadId ? 'Upload Column Mapping Review' : `Column Mapping Editor: ${source?.name || 'Feed'}`}
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Map partner-specific column headers to LeakCheck canonical fields with exact & fuzzy auto-matching.
+            {uploadId
+              ? 'Review automated mapping suggestions for the uploaded workbook before approval and ingestion.'
+              : 'Configure and maintain canonical column mapping templates for partner data feeds.'}
           </p>
 
           {/* Source Selector Controls */}
@@ -354,12 +498,13 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
             <label className="text-xs font-semibold text-slate-700">Data Feed Source:</label>
             <select
               value={source?.id || sourceId}
+              disabled={Boolean(uploadId)}
               onChange={(e) => {
                 if (onSelectSource) {
                   onSelectSource(e.target.value);
                 }
               }}
-              className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500 shadow-sm"
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500 shadow-sm disabled:bg-slate-100 disabled:text-slate-600"
             >
               {sourcesList.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -376,11 +521,11 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
 
             {activeMapping ? (
               <span className="px-2.5 py-1 rounded text-[11px] font-mono font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                v{activeMapping.version} Active
+                Active: v{activeMapping.version}
               </span>
             ) : (
               <span className="px-2.5 py-1 rounded text-[11px] font-mono font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                Draft (No Active Version)
+                No Active Version
               </span>
             )}
           </div>
@@ -400,7 +545,7 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
 
           <button
             onClick={handleApproveMapping}
-            disabled={isSaving || missingRequired.length > 0 || isMappingIdentical}
+            disabled={isSaving || missingRequired.length > 0 || isMappingIdentical || Boolean(uploadErrorDetail)}
             className={`inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-semibold transition-all shadow-sm ${
               isMappingIdentical
                 ? 'bg-slate-100 text-slate-500 border border-slate-200 cursor-not-allowed'
@@ -416,6 +561,48 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Upload Review Context Banner */}
+      {uploadId && uploadPreview && (
+        <div className="p-4 bg-indigo-50/70 border border-indigo-200 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-sm flex-shrink-0">
+              <FileSpreadsheet className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-900 text-sm font-mono">{uploadPreview.file_name}</span>
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-amber-100 text-amber-800 border border-amber-300">
+                  {uploadPreview.processing_status === 'mapping_pending' ? 'Review Pending' : uploadPreview.processing_status}
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-0.5 font-mono">
+                Upload ID: {uploadPreview.upload_id} • {uploadPreview.total_rows.toLocaleString()} rows • {uploadPreview.detected_columns.length} columns detected
+              </p>
+            </div>
+          </div>
+          <div className="text-right">
+            <span className="text-[11px] text-slate-500 font-mono block">
+              Showing exact detected workbook headers
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Error Banner */}
+      {uploadErrorDetail && (
+        <div className="p-6 bg-rose-50 border border-rose-200 rounded-xl text-center space-y-3">
+          <AlertCircle className="w-8 h-8 text-rose-600 mx-auto" />
+          <h3 className="font-bold text-rose-900 text-sm">Upload Review Unavailable</h3>
+          <p className="text-xs text-rose-700 max-w-md mx-auto">{uploadErrorDetail}</p>
+          <button
+            onClick={onBackToUploads}
+            className="px-4 py-2 bg-rose-600 text-white rounded-lg text-xs font-semibold hover:bg-rose-700 transition-colors"
+          >
+            Return to Upload Center
+          </button>
+        </div>
+      )}
 
       {/* Feedback Alert */}
       {feedbackMessage && (
@@ -460,141 +647,151 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
       )}
 
       {/* Main Grid: Mapping Editor & Version History */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Mapping Controls (2 Cols) */}
-        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
-            <div>
-              <h2 className="font-bold text-slate-900">Canonical Field Configuration</h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Active Mapping:{' '}
-                {activeMapping ? (
-                  <span className="font-semibold text-indigo-600">Version {activeMapping.version}</span>
-                ) : (
-                  <span className="text-amber-600 font-semibold">None (Draft)</span>
-                )}
-              </p>
-            </div>
-            <div className="flex items-center gap-1.5 text-xs text-slate-600">
-              <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              Immutable upon approval
-            </div>
-          </div>
-
-          <div className="divide-y divide-slate-100">
-            {canonicalFields.map((field) => {
-              const isRequired = field.required_for?.includes(source?.source_type);
-              const selectedCol = mappingState[field.key] || '';
-
-              return (
-                <div key={field.key} className="p-4 hover:bg-slate-50/50 flex flex-col md:flex-row md:items-center justify-between gap-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-slate-900">{field.display_name}</span>
-                      {isRequired ? (
-                        <span className="text-[10px] uppercase font-extrabold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200">
-                          Required
-                        </span>
+      {!uploadErrorDetail && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Mapping Controls (2 Cols) */}
+          <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <div>
+                <h2 className="font-bold text-slate-900">Canonical Field Configuration</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {uploadId ? (
+                    <span>
+                      Mapping targets for workbook headers ({sourceColumns.length} available)
+                    </span>
+                  ) : (
+                    <span>
+                      Active Mapping:{' '}
+                      {activeMapping ? (
+                        <span className="font-semibold text-indigo-600">Version {activeMapping.version}</span>
                       ) : (
-                        <span className="text-[10px] uppercase font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                          Optional
-                        </span>
+                        <span className="text-amber-600 font-semibold">None (Draft)</span>
                       )}
-                      {renderBadge(field.key)}
-                    </div>
-                    <p className="text-xs text-slate-500 mt-0.5">{field.description}</p>
-                    <span className="text-[11px] font-mono text-slate-400">key: {field.key}</span>
-                  </div>
+                    </span>
+                  )}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-slate-600">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                Immutable upon approval
+              </div>
+            </div>
 
-                  <div className="w-full md:w-64">
-                    <select
-                      value={selectedCol}
-                      onChange={(e) => handleColumnSelect(field.key, e.target.value)}
-                      className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                    >
-                      <option value="">-- Unmapped --</option>
-                      {sourceColumns.map((col) => (
-                        <option key={col} value={col}>
-                          {col}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+            <div className="divide-y divide-slate-100">
+              {canonicalFields.map((field) => {
+                const isRequired = field.required_for?.includes(source?.source_type);
+                const selectedCol = mappingState[field.key] || '';
 
-        {/* Version History & Rollback (1 Col) */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col">
-          <div className="flex items-center gap-2 pb-4 border-b border-slate-200">
-            <History className="w-5 h-5 text-indigo-600" />
-            <h2 className="font-bold text-slate-900">Version History & Rollback</h2>
-          </div>
-
-          <p className="text-xs text-slate-600 mt-3 mb-4">
-            All mapping approvals are immutable audit records. Both Finance Executives and Co-founders can restore prior versions.
-          </p>
-
-          <div className="space-y-3 flex-1 overflow-y-auto max-h-[500px]">
-            {versions.length === 0 ? (
-              <p className="text-xs text-slate-400 py-6 text-center">No prior approved versions.</p>
-            ) : (
-              versions.map((ver) => {
-                const isActive = activeMapping?.id === ver.id;
                 return (
-                  <div
-                    key={ver.id}
-                    className={`p-3.5 rounded-lg border text-xs transition-all ${
-                      isActive
-                        ? 'border-indigo-300 bg-indigo-50/50'
-                        : 'border-slate-200 bg-slate-50 hover:bg-slate-100/60'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between font-bold mb-1">
-                      <span className="text-slate-900">Version {ver.version}</span>
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] uppercase font-semibold ${
-                          isActive
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : ver.status === 'rolled_back'
-                            ? 'bg-purple-100 text-purple-800'
-                            : 'bg-slate-200 text-slate-700'
-                        }`}
-                      >
-                        {isActive ? 'Active' : ver.status}
-                      </span>
+                  <div key={field.key} className="p-4 hover:bg-slate-50/50 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-slate-900">{field.display_name}</span>
+                        {isRequired ? (
+                          <span className="text-[10px] uppercase font-extrabold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200">
+                            Required
+                          </span>
+                        ) : (
+                          <span className="text-[10px] uppercase font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                            Optional
+                          </span>
+                        )}
+                        {renderBadge(field.key)}
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">{field.description}</p>
+                      <span className="text-[11px] font-mono text-slate-400">key: {field.key}</span>
                     </div>
 
-                    <div className="text-[11px] text-slate-500 mb-2">
-                      Approved: {ver.approved_at ? new Date(ver.approved_at).toLocaleString() : 'Draft'}
-                    </div>
-
-                    <details className="text-[11px] bg-white p-2 rounded border border-slate-200 mb-2.5">
-                      <summary className="cursor-pointer text-slate-600 font-medium">View Field Mapping</summary>
-                      <pre className="mt-1 font-mono text-[10px] text-slate-700 overflow-x-auto">
-                        {JSON.stringify(ver.mapping_json, null, 2)}
-                      </pre>
-                    </details>
-
-                    {!isActive && (
-                      <button
-                        onClick={() => handleRollback(ver.id)}
-                        disabled={isSaving}
-                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-purple-700 hover:text-purple-900 bg-purple-50 px-2.5 py-1 rounded border border-purple-200 transition-colors"
+                    <div className="w-full md:w-64">
+                      <select
+                        value={selectedCol}
+                        onChange={(e) => handleColumnSelect(field.key, e.target.value)}
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
                       >
-                        <RotateCcw className="w-3 h-3" />
-                        Rollback to v{ver.version}
-                      </button>
-                    )}
+                        <option value="">-- Unmapped --</option>
+                        {sourceColumns.map((col) => (
+                          <option key={col} value={col}>
+                            {col}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 );
-              })
-            )}
+              })}
+            </div>
+          </div>
+
+          {/* Version History & Rollback (1 Col) */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col">
+            <div className="flex items-center gap-2 pb-4 border-b border-slate-200">
+              <History className="w-5 h-5 text-indigo-600" />
+              <h2 className="font-bold text-slate-900">Version History &amp; Rollback</h2>
+            </div>
+
+            <p className="text-xs text-slate-600 mt-3 mb-4">
+              All mapping approvals are immutable audit records. Both Finance Executives and Co-founders can restore prior versions.
+            </p>
+
+            <div className="space-y-3 flex-1 overflow-y-auto max-h-[500px]">
+              {versions.length === 0 ? (
+                <p className="text-xs text-slate-400 py-6 text-center">No prior approved versions.</p>
+              ) : (
+                versions.map((ver) => {
+                  const isActive = activeMapping?.id === ver.id;
+                  return (
+                    <div
+                      key={ver.id}
+                      className={`p-3.5 rounded-lg border text-xs transition-all ${
+                        isActive
+                          ? 'border-indigo-300 bg-indigo-50/50'
+                          : 'border-slate-200 bg-slate-50 hover:bg-slate-100/60'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-bold mb-1">
+                        <span className="text-slate-900">Version {ver.version}</span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] uppercase font-semibold ${
+                            isActive
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : ver.status === 'rolled_back'
+                              ? 'bg-purple-100 text-purple-800'
+                              : 'bg-slate-200 text-slate-700'
+                          }`}
+                        >
+                          {isActive ? 'Active' : ver.status}
+                        </span>
+                      </div>
+
+                      <div className="text-[11px] text-slate-500 mb-2">
+                        Approved: {ver.approved_at ? new Date(ver.approved_at).toLocaleString() : 'Draft'}
+                      </div>
+
+                      <details className="text-[11px] bg-white p-2 rounded border border-slate-200 mb-2.5">
+                        <summary className="cursor-pointer text-slate-600 font-medium">View Field Mapping</summary>
+                        <pre className="mt-1 font-mono text-[10px] text-slate-700 overflow-x-auto">
+                          {JSON.stringify(ver.mapping_json, null, 2)}
+                        </pre>
+                      </details>
+
+                      {!isActive && (
+                        <button
+                          onClick={() => handleRollback(ver.id)}
+                          disabled={isSaving}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-purple-700 hover:text-purple-900 bg-purple-50 px-2.5 py-1 rounded border border-purple-200 transition-colors"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          Rollback to v{ver.version}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

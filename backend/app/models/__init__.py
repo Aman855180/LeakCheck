@@ -11,6 +11,7 @@ from app.models.tracking_rule import (
 )
 from app.models.order_event import OrderEvent, EventLineageLock
 from app.models.upload import Upload
+from app.models.upload_mapping_suggestion import UploadMappingSuggestion
 from app.models.column_mapping import ColumnMapping
 from app.models.job import Job
 from app.models.upload_row_error import UploadRowError
@@ -32,6 +33,7 @@ __all__ = [
     "OrderEvent",
     "EventLineageLock",
     "Upload",
+    "UploadMappingSuggestion",
     "ColumnMapping",
     "Job",
     "UploadRowError",

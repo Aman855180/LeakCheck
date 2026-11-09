@@ -151,10 +151,10 @@ class AIFallbackMapper:
         )
 
         try:
-            # Initialize official Google GenAI Client with 15s timeout
+            # Initialize official Google GenAI Client with 30s timeout
             client = genai.Client(
                 api_key=self.api_key,
-                http_options=types.HttpOptions(timeout=15000)
+                http_options=types.HttpOptions(timeout=30000)
             )
 
             # Generate structured content with schema enforcement

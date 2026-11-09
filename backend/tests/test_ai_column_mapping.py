@@ -3,6 +3,7 @@ import uuid
 from unittest.mock import patch, MagicMock
 import pytest
 
+from google.genai import types
 from google.genai.errors import APIError
 from app.services.column_mapper import suggest_column_mappings, CANONICAL_FIELDS
 from app.services.ai_column_mapper import (
@@ -88,6 +89,154 @@ def test_case_13_exact_and_fuzzy_bypassing_gemini():
             assert "freight_amount" not in unresolved
             assert "order_id" not in unallocated
             assert "tot_freight" not in unallocated
+
+
+def test_case_partial_rapidfuzz_triggers_gemini_for_unresolved_fields():
+    """
+    Regression Test: Partial RapidFuzz success MUST NOT skip Gemini for remaining unresolved columns.
+    Workbook headers:
+      - purchase_timestamp -> RapidFuzz -> order_date (~71%)
+      - parcel_consignment_code -> RapidFuzz -> tracking_number (~70%)
+      - retailer_transaction_code -> Gemini -> external_order_id (0.90)
+      - basket_gross_inr -> Gemini -> order_value (0.95)
+      - collection_method -> Gemini -> payment_mode (0.95)
+    """
+    source_cols = [
+        "retailer_transaction_code",
+        "basket_gross_inr",
+        "collection_method",
+        "purchase_timestamp",
+        "parcel_consignment_code"
+    ]
+    samples = {
+        "retailer_transaction_code": ["LC-GEM-2001", "LC-GEM-2002"],
+        "basket_gross_inr": ["1299.00", "2499.50"],
+        "collection_method": ["COD", "PREPAID"],
+        "purchase_timestamp": ["2026-10-20 10:15:00"],
+        "parcel_consignment_code": ["WBX-71001"]
+    }
+
+    mock_gemini_response = (
+        '{\n'
+        '  "mappings": [\n'
+        '    {\n'
+        '      "canonical_field": "external_order_id",\n'
+        '      "source_column": "retailer_transaction_code",\n'
+        '      "confidence": 0.90,\n'
+        '      "reasoning": "Retailer transaction code serves as external order id."\n'
+        '    },\n'
+        '    {\n'
+        '      "canonical_field": "order_value",\n'
+        '      "source_column": "basket_gross_inr",\n'
+        '      "confidence": 0.95,\n'
+        '      "reasoning": "Basket gross INR corresponds to order invoice value."\n'
+        '    },\n'
+        '    {\n'
+        '      "canonical_field": "payment_mode",\n'
+        '      "source_column": "collection_method",\n'
+        '      "confidence": 0.95,\n'
+        '      "reasoning": "Collection method contains COD and PREPAID payment modes."\n'
+        '    }\n'
+        '  ]\n'
+        '}'
+    )
+
+    with patch.object(AIFallbackMapper, "__init__", lambda self, *args, **kwargs: setattr(self, "api_key", "mock-key") or setattr(self, "model", "gemini-3.5-flash")):
+        with patch("google.genai.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+            mock_client.models.generate_content.return_value = MagicMock(text=mock_gemini_response)
+
+            result = suggest_column_mappings(
+                source_columns=source_cols,
+                source_type="orders",
+                samples_by_col=samples,
+                enable_ai=True
+            )
+
+            suggestions = result["suggestions"]
+
+            # 1. Verify Pass 2 RapidFuzz matches were preserved
+            assert suggestions["order_date"]["column"] == "purchase_timestamp"
+            assert suggestions["order_date"]["match_type"] == "FUZZY"
+            assert suggestions["order_date"]["confidence"] >= 0.70
+
+            assert suggestions["tracking_number"]["column"] == "parcel_consignment_code"
+            assert suggestions["tracking_number"]["match_type"] == "FUZZY"
+            assert suggestions["tracking_number"]["confidence"] >= 0.70
+
+            # 2. Verify Gemini was called and received ONLY unresolved columns
+            mock_client.models.generate_content.assert_called_once()
+            _, kwargs = mock_client.models.generate_content.call_args
+            contents = kwargs.get("contents", "")
+            # Must contain unallocated columns
+            assert "retailer_transaction_code" in contents
+            assert "basket_gross_inr" in contents
+            assert "collection_method" in contents
+            # Must NOT contain columns already resolved by RapidFuzz
+            assert "purchase_timestamp" not in contents
+            assert "parcel_consignment_code" not in contents
+
+            # 3. Verify Gemini AI suggestions were merged correctly
+            assert suggestions["external_order_id"]["column"] == "retailer_transaction_code"
+            assert suggestions["external_order_id"]["match_type"] == "AI_SUGGESTED"
+            assert suggestions["external_order_id"]["confidence"] == 0.90
+
+            assert suggestions["order_value"]["column"] == "basket_gross_inr"
+            assert suggestions["order_value"]["match_type"] == "AI_SUGGESTED"
+            assert suggestions["order_value"]["confidence"] == 0.95
+
+            assert suggestions["payment_mode"]["column"] == "collection_method"
+            assert suggestions["payment_mode"]["match_type"] == "AI_SUGGESTED"
+            assert suggestions["payment_mode"]["confidence"] == 0.95
+
+            # 4. Verify orders required fields (external_order_id, order_value, order_date) are all resolved
+            assert len(result["missing_required"]) == 0
+
+
+def test_case_partial_rapidfuzz_preserved_when_gemini_fails_or_times_out():
+    """
+    Regression Test: When Gemini fails (e.g. HTTP 429 rate limit or timeout),
+    partial RapidFuzz matches are safely preserved while unresolved fields remain available for manual mapping.
+    """
+    source_cols = [
+        "retailer_transaction_code",
+        "basket_gross_inr",
+        "collection_method",
+        "purchase_timestamp",
+        "parcel_consignment_code"
+    ]
+
+    with patch.object(AIFallbackMapper, "__init__", lambda self, *args, **kwargs: setattr(self, "api_key", "mock-key") or setattr(self, "model", "gemini-3.5-flash")):
+        with patch("google.genai.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+            # Simulate Gemini HTTP 429 rate limit error
+            mock_client.models.generate_content.side_effect = APIError(429, "Rate limit exceeded")
+
+            result = suggest_column_mappings(
+                source_columns=source_cols,
+                source_type="orders",
+                enable_ai=True
+            )
+
+            suggestions = result["suggestions"]
+
+            # RapidFuzz matches MUST still be present
+            assert suggestions["order_date"]["column"] == "purchase_timestamp"
+            assert suggestions["order_date"]["match_type"] == "FUZZY"
+            assert suggestions["tracking_number"]["column"] == "parcel_consignment_code"
+            assert suggestions["tracking_number"]["match_type"] == "FUZZY"
+
+            # Gemini-dependent fields remain unresolved for manual mapping
+            assert suggestions["external_order_id"]["column"] is None
+            assert suggestions["external_order_id"]["match_type"] == "NONE"
+            assert suggestions["order_value"]["column"] is None
+            assert suggestions["order_value"]["match_type"] == "NONE"
+
+            # Missing required fields correctly flag external_order_id and order_value
+            assert "external_order_id" in result["missing_required"]
+            assert "order_value" in result["missing_required"]
 
 
 # ==============================================================================
@@ -300,13 +449,35 @@ def test_case_5_api_timeout_handling():
     with patch("google.genai.Client") as mock_client_cls:
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
-        mock_client.models.generate_content.side_effect = TimeoutError("Request timed out after 15000ms")
+        mock_client.models.generate_content.side_effect = TimeoutError("Request timed out after 30000ms")
 
         predictions = mapper.predict_unresolved_mappings(
             unresolved_canonical_fields={"order_value": CANONICAL_FIELDS["order_value"]},
             unallocated_source_columns=["candidate_col"]
         )
         assert predictions == {}
+
+
+def test_case_gemini_client_initialized_with_30s_timeout():
+    """Explicit regression test: Google GenAI client is initialized with types.HttpOptions(timeout=30000)."""
+    mapper = AIFallbackMapper(api_key="mock-test-key")
+    with patch("google.genai.Client") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = MagicMock(text='{"mappings": []}')
+
+        mapper.predict_unresolved_mappings(
+            unresolved_canonical_fields={"order_value": CANONICAL_FIELDS["order_value"]},
+            unallocated_source_columns=["candidate_col"]
+        )
+
+        mock_client_cls.assert_called_once()
+        _, kwargs = mock_client_cls.call_args
+        assert kwargs.get("api_key") == "mock-test-key"
+        assert "http_options" in kwargs
+        http_opts = kwargs["http_options"]
+        assert isinstance(http_opts, types.HttpOptions)
+        assert http_opts.timeout == 30000
 
 
 def test_case_6_http_429_rate_limit_handling():

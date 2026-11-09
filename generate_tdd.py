@@ -191,13 +191,14 @@ def create_tdd():
         "To accommodate frequently changing partner spreadsheet layouts without brittle hardcoding, LeakCheck implements an intelligent 3-pass resolution hierarchy:"
     )
     add_bullet("Matches headers against calibrated partner dictionary aliases (e.g., 'awb_no' -> 'tracking_number'). Zero network latency.", "Pass 1: Exact Dictionary Match")
-    add_bullet("Computes token sort ratio and weighted Levenshtein distance (RapidFuzz). Matches headers scoring >= 80% similarity.", "Pass 2: Fuzzy String Matching")
-    add_bullet("Invoked strictly for candidate columns that remain unresolved after Passes 1 and 2. Sends unresolved headers, schema definitions, and 5 representative sanitized values to Google Gemini 2.5 Flash via the official `google-genai` SDK with strict JSON schema enforcement.", "Pass 3: LLM Semantic Fallback")
+    add_bullet("Computes token sort ratio and weighted Levenshtein distance (RapidFuzz). Accepts candidate headers scoring >= 70% similarity (confidence 0.70–1.00). Matches between 70% and below 80% remain flagged for human review in the UI.", "Pass 2: Fuzzy String Matching (70% Acceptance Threshold)")
+    add_bullet("Invoked strictly for candidate columns that remain unresolved after Passes 1 and 2. Dispatches unresolved headers, schema definitions, and 5 representative sanitized values to Google Gemini via the official `google-genai` SDK with strict JSON schema enforcement and a 30,000ms HTTP timeout.", "Pass 3: LLM Semantic Fallback")
 
     add_h2("5.1 Uncertainty Thresholds & Human-in-the-Loop Governance")
-    add_bullet("Predictions with confidence scores below 0.80 are explicitly flagged as uncertain in the review interface. Predictions below 0.60 are rejected.", "Uncertainty Thresholds")
+    add_bullet("Clearly distinguishes between the RapidFuzz acceptance threshold (70%) and the UI review threshold (80%). Suggestions with confidence scores between 0.60 and below 0.80 (including fuzzy matches between 70% and 79%) are explicitly flagged with 'AI Review Required' (amber badge) for mandatory operator verification. Suggestions below 0.60 are rejected.", "Uncertainty & Review Governance (80% / 60%)")
     add_bullet("Regex patterns scrub phone numbers, email addresses, and payment card numbers (`[REDACTED_PII]`). PII candidate columns are purged prior to calling the LLM.", "Pre-LLM PII Minimization")
     add_bullet("AI-suggested mappings are NEVER automatically applied to financial ingestion. They are presented in the UI with an `AI_SUGGESTED` badge for mandatory review and explicit approval by a Finance Executive or Co-founder.", "Mandatory Human Approval")
+    add_bullet("If the Gemini API encounters rate limits (HTTP 429), quota exhaustion, or request timeouts, it gracefully catches the error and falls back to deterministic matching. Existing RapidFuzz matches are safely preserved while remaining unresolved fields remain unmapped for mandatory manual assignment.", "Quota & Fallback Resilience")
     add_bullet("Once approved, an immutable version is recorded in `column_mappings`. Future uploads of identical format ingest automatically, while schema changes trigger a new version approval.", "Idempotency & Versioning")
     add_bullet("Pydantic schema validation (`AIColumnMappingResponse`) enforces output formatting and rejects hallucinated target fields. Production environments handling sensitive customer financial records should note that Gemini free-tier terms allow data retention for model improvements; enterprise deployments should utilize dedicated enterprise Google Cloud Gemini projects or rely solely on deterministic Passes 1 & 2.", "Structured Schema & Privacy Governance")
 
@@ -255,10 +256,10 @@ def create_tdd():
     status_table.alignment = WD_TABLE_ALIGNMENT.CENTER
     status_rows = [
         ("Deliverable Item", "Status", "Implementation Reference / Location"),
-        ("Core Reconciliation Engine (Phase 1–3)", "COMPLETED", "backend/app/services/recon_engine.py, test suite 94/94 passed"),
+        ("Core Reconciliation Engine (Phase 1–3)", "COMPLETED", "backend/app/services/recon_engine.py, test suite 116/117 passed (1 skipped)"),
         ("Orders & Reconciliation UI (Phase 4)", "COMPLETED", "frontend/src/pages/ReconciliationHub.tsx, filters & timeline modal"),
         ("Claims & Money-at-Risk Hub (Phase 5)", "COMPLETED", "frontend/src/pages/ClaimsManagement.tsx, MoneyAtRiskDashboard.tsx"),
-        ("AI-Assisted Column Mapping (Phase 6)", "COMPLETED", "backend/app/services/ai_column_mapper.py, PII scrubbing & fallback"),
+        ("AI-Assisted Column Mapping (Phase 6)", "COMPLETED", "backend/app/services/ai_column_mapper.py, Gemini fallback & PII scrubbing"),
         ("Public Cloud Live Hosting", "DEFERRED", "Local Docker Compose validated; external cloud hosting deferred per brief")
     ]
     for row_idx, (c0, c1, c2) in enumerate(status_rows):

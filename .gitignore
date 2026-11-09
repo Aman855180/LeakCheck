@@ -58,3 +58,4 @@ dist-ssr/
 # Local scratch & test data
 scratch/
 test_data/
+storage/

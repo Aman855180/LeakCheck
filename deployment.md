@@ -128,11 +128,13 @@ This automatically spins up:
 - FastAPI backend on port 8000
 - React frontend on port 5173
 
+> **Note:** Public cloud live hosting is deferred; local bare-metal and Docker Compose deployments have been fully tested and validated.
+
 ---
 
-## 6. Tested Demo Login Credentials
+## 6. Tested Demo Login Credentials (Demo-Only)
 
-The following pre-configured demo user accounts are seeded and tested:
+The following pre-configured demo user accounts are seeded and tested for local evaluation:
 
 | Role | Email / Username | Password | Permissions & Scope |
 | :--- | :--- | :--- | :--- |
@@ -149,15 +151,16 @@ Run the complete regression and AI fallback test suite:
 cd backend
 python -m pytest tests/ -v
 ```
-**Expected Result:** `106 passed, 1 skipped` (the real API call test is skipped when `GEMINI_API_KEY` is not provided, with 14 mocked unit tests fully validating client initialization, PII scrubbing, schema validation, confidence thresholds, error handling, rate limits, and timeouts).
+**Expected Result:** `116 passed, 1 skipped (total 117 tests)` (the real API call test is skipped when `GEMINI_API_KEY` is not provided, with 16 unit tests fully validating client initialization, PII scrubbing, schema validation, confidence thresholds, error handling, rate limits, timeouts, and fallback resilience).
 
 ### Frontend Build Verification
 Verify production TypeScript compilation:
 ```bash
 cd frontend
+npm test -- --run
 npm run build
 ```
-**Expected Result:** Clean compilation with `0 errors`.
+**Expected Result:** `10 passed (100%)`, clean Vite compilation with `0 errors`.
 
 ---
 
@@ -175,11 +178,21 @@ npm run build
 
 LeakCheck implements a three-tier column mapping architecture:
 1. **Pass 1 — Exact Dictionary:** Instant deterministic matching against known canonical aliases (O(1)).
-2. **Pass 2 — RapidFuzz Similarity:** Token sort and normalized ratio matching (threshold >= 80).
-3. **Pass 3 — Google Gemini Semantic Fallback:** Invokes Google Gemini 2.5 Flash via the official `google-genai` SDK (`gemini-2.5-flash`) exclusively for remaining unresolved fields.
+2. **Pass 2 — RapidFuzz Similarity:** Token sort and normalized ratio matching (acceptance threshold >= 70%). Matches scoring between 70% and below 80% are accepted as candidate suggestions but remain flagged with confidence < 0.80 for mandatory human review in the UI.
+3. **Pass 3 — Google Gemini Semantic Fallback:** Invokes Google Gemini (configurable via `GEMINI_MODEL`, e.g. `gemini-3.5-flash`) via the official `google-genai` SDK with a 30,000ms HTTP timeout exclusively for remaining unresolved fields.
 
 ### Privacy, PII Scrubbing & Security
 - **Strict Pre-LLM Sanitization:** `sanitize_columns_and_samples` drops all known customer PII fields (customer names, recipient details, addresses) and scrubs phone numbers (`+91...`), email addresses, and payment card numbers from cell samples before payload dispatch.
-- **Strict Structured Outputs:** Uses Pydantic schema validation (`AIColumnMappingResponse`) to enforce strict type constraints and disallow hallucinated canonical fields.
-- **Confidence Scoring & Approval:** Suggestions with confidence < 0.60 are rejected. Suggestions between 0.60 and 0.80 are marked with `uncertain: True` ("AI Review Required"). All AI suggestions require mandatory human approval by a Finance Executive or Co-founder before staging or committing.
+- **Strict Structured Outputs & Timeouts:** Uses Pydantic schema validation (`AIColumnMappingResponse`) to enforce strict type constraints and disallow hallucinated canonical fields. Enforces a 30-second (30,000ms) request timeout with automatic graceful fallback.
+- **Confidence Scoring & Approval:** Suggestions with confidence < 0.60 are rejected. In the UI review interface, suggestions with confidence between 0.60 and below 0.80 (including fuzzy matches between 70% and 79% and moderate-confidence AI suggestions) are marked with "AI Review Required" (amber badge), while suggestions >= 0.80 are marked "AI Suggested" (purple badge). All AI suggestions require mandatory human approval by a Finance Executive or Co-founder before staging or committing.
+- **Quota & Rate-Limit Fallback:** If Gemini API rate limits (HTTP 429), quota exhaustion, or request timeouts occur, the mapper safely catches the error and falls back to deterministic matching. Partial RapidFuzz matches are preserved, and unresolved fields remain unmapped for mandatory manual assignment.
 - **Free-Tier Data Handling Notice:** Google Gemini's free tier terms may permit data usage for model improvements. Production environments handling sensitive financial records should configure a paid/enterprise Google Cloud Gemini API key with enterprise privacy terms, or operate purely using deterministic Pass 1 & Pass 2 matching.
+
+---
+
+## 10. Repository & Documentation Links
+
+- **Public GitHub Repository:** [https://github.com/Aman855180/LeakCheck](https://github.com/Aman855180/LeakCheck)
+- **Technical Design Document:** `Technical_Design_Document.docx` (in root directory)
+- **Database Migrations:** `backend/migrations/`
+- **Architectural Scope:** Single-tenant logical partner partition for Company A (₹43.2 Cr GMV). Distributed caching and multi-tenant RLS deferred to future enterprise roadmap.

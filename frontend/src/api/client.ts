@@ -57,6 +57,7 @@ export interface UploadPreview {
   source_name?: string;
   file_name: string;
   source_type: string;
+  processing_status?: string;
   total_rows: number;
   detected_columns: string[];
   dropped_pii_columns: string[];
@@ -320,6 +321,9 @@ export const api = {
 
   getUpload: (uploadId: string) =>
     apiRequest<Upload>(`/api/v1/uploads/${uploadId}`),
+
+  getUploadPreview: (uploadId: string) =>
+    apiRequest<UploadPreview>(`/api/v1/uploads/${uploadId}/preview`),
 
   getUploadErrors: (uploadId: string) =>
     apiRequest<UploadRowError[]>(`/api/v1/uploads/${uploadId}/errors`),

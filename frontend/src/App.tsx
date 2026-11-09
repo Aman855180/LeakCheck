@@ -31,6 +31,20 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     checkSession();
+    // Restore uploadId or activeTab from URL search parameters on refresh
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlUploadId = params.get('uploadId');
+      const urlSourceId = params.get('sourceId');
+      const urlTab = params.get('tab') as any;
+      if (urlUploadId) {
+        setSelectedUploadId(urlUploadId);
+        if (urlSourceId) setSelectedMappingSourceId(urlSourceId);
+        setActiveTab('mappings');
+      } else if (urlTab && ['dashboard', 'recon', 'claims', 'uploads', 'mappings', 'rate_cards'].includes(urlTab)) {
+        setActiveTab(urlTab);
+      }
+    } catch {}
   }, []);
 
   const checkSession = async () => {
@@ -73,6 +87,16 @@ export const App: React.FC = () => {
     setSelectedMappingSourceId(sourceId);
     setSelectedUploadId(uploadId);
     setActiveTab('mappings');
+    try {
+      const url = new URL(window.location.href);
+      if (uploadId) {
+        url.searchParams.set('uploadId', uploadId);
+        url.searchParams.set('sourceId', sourceId);
+      } else {
+        url.searchParams.delete('uploadId');
+      }
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
   };
 
   if (loading) {
@@ -169,7 +193,15 @@ export const App: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setActiveTab('mappings')}
+                onClick={() => {
+                  setSelectedUploadId(undefined);
+                  setActiveTab('mappings');
+                  try {
+                    const url = new URL(window.location.href);
+                    url.searchParams.delete('uploadId');
+                    window.history.replaceState({}, '', url.toString());
+                  } catch {}
+                }}
                 className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors ${
                   activeTab === 'mappings'
                     ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
@@ -260,8 +292,25 @@ export const App: React.FC = () => {
             sourceId={selectedMappingSourceId || (sources[0]?.id || '')}
             uploadId={selectedUploadId}
             sources={sources}
-            onSelectSource={(newSourceId) => setSelectedMappingSourceId(newSourceId)}
-            onBackToUploads={() => setActiveTab('uploads')}
+            onSelectSource={(newSourceId) => {
+              setSelectedMappingSourceId(newSourceId);
+              setSelectedUploadId(undefined);
+              try {
+                const url = new URL(window.location.href);
+                url.searchParams.delete('uploadId');
+                url.searchParams.set('sourceId', newSourceId);
+                window.history.replaceState({}, '', url.toString());
+              } catch {}
+            }}
+            onBackToUploads={() => {
+              setSelectedUploadId(undefined);
+              setActiveTab('uploads');
+              try {
+                const url = new URL(window.location.href);
+                url.searchParams.delete('uploadId');
+                window.history.replaceState({}, '', url.toString());
+              } catch {}
+            }}
           />
         )}
 
