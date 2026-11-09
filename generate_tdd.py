@@ -210,6 +210,34 @@ def create_tdd():
     add_bullet("Input validation enforces a 25MB ceiling and 150k row limit before database writes. Quarantined rows with corrupted dates/amounts are isolated in `upload_row_errors`.", "Ingestion Pipeline Guardrails")
     add_bullet("Formula triggers (`=`, `+`, `-`, `@`, `\\t`, `\\r`) are neutralized with a prepended single quote in CSV exports while preserving legitimate negative financial decimals.", "CSV Formula Injection (CWE-1236)")
 
+    # --- 6.1 Tested Demo Credentials ---
+    add_h2("6.1 Tested Demo Credentials (Demo-Only Evaluation)")
+    doc.add_paragraph(
+        "For stakeholder and evaluator auditing, the database seed script (`backend/app/db/seed.py`) provisions two pre-configured demo user accounts. These accounts are strictly for local testing and evaluation:"
+    )
+    creds_table = doc.add_table(rows=3, cols=4)
+    creds_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    creds_rows = [
+        ("Role", "Username / Email", "Password", "Permissions & Access Scope"),
+        ("Finance Executive", "finance_exec@company-a.com", "Password123!", "Full ingestion, rate-card creation, dispute claim management, mapping approval"),
+        ("Co-founder", "cofounder@company-a.com", "Password123!", "Read-only executive money-at-risk audit, claims review, mapping approval, CSV exports")
+    ]
+    for row_idx, (c0, c1, c2, c3) in enumerate(creds_rows):
+        row = creds_table.rows[row_idx]
+        row.cells[0].text, row.cells[1].text, row.cells[2].text, row.cells[3].text = c0, c1, c2, c3
+        if row_idx == 0:
+            for cell in row.cells:
+                cell.paragraphs[0].runs[0].font.bold = True
+                set_cell_background(cell, "E2E8F0")
+        else:
+            set_cell_background(row.cells[0], "F8FAFC")
+            set_cell_background(row.cells[1], "FFFFFF")
+            set_cell_background(row.cells[2], "FFFFFF")
+            set_cell_background(row.cells[3], "FFFFFF")
+        for cell in row.cells:
+            cell.paragraphs[0].runs[0].font.size = Pt(9.5)
+            set_cell_margins(cell, 60, 60, 80, 80)
+
     # --- 7. Verification & Benchmark Results ---
     add_h1("7. Performance Benchmarks & Independent Oracle")
     doc.add_paragraph(
