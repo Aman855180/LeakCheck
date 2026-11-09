@@ -15,7 +15,7 @@ LeakCheck is an automated, multi-feed financial reconciliation engine engineered
 - **Backend API:** FastAPI (Python 3.11+ / 3.13) with asynchronous endpoints, SQLAlchemy 2.0 ORM, Alembic migrations, and Psycopg 3 streaming driver.
 - **Frontend SPA:** React 18, TypeScript, Tailwind CSS, Lucide icons, Vite 5, TanStack Table & Query.
 - **Database:** PostgreSQL 16+ with ACID append-only event lineage, advisory locking, composite partner keys, and SQL window analytics.
-- **Mapping & AI Engine:** Exact dictionary + RapidFuzz fuzzy matcher with Anthropic Claude 3.5 Sonnet fallback (with pre-LLM PII scrubbing and human approval).
+- **Mapping & AI Engine:** Exact dictionary + RapidFuzz fuzzy matcher with Google Gemini 2.5 Flash fallback via official `google-genai` SDK (with pre-LLM PII scrubbing, structured schema enforcement, and mandatory human approval).
 - **Supported Statement Formats:** `.csv` (text/csv) and `.xlsx` (OpenXML Spreadsheet) with magic-byte validation. Legacy `.xls` (pre-2007 BIFF8) is explicitly rejected with HTTP 400 `UNSUPPORTED_FORMAT`.
 
 ---
@@ -50,8 +50,8 @@ Create `.env` in the root directory (or in `backend/` and `frontend/` respective
 | `DATABASE_URL` | Yes | Full SQLAlchemy database connection URI |
 | `ALLOWED_ORIGINS` | Yes | Comma-separated list of allowed CORS client origins |
 | `DEFAULT_AS_OF_DATE` | Yes | Baseline reconciliation reference date (e.g., `2026-11-01`) |
-| `ANTHROPIC_API_KEY` | Optional | API key for AI fallback column mapping (Claude 3.5 Sonnet) |
-| `ANTHROPIC_MODEL` | Optional | Model identifier for Anthropic Claude fallback |
+| `GEMINI_API_KEY` | Optional | API key for AI fallback column mapping (Google Gemini 2.5 Flash) |
+| `GEMINI_MODEL` | Optional | Model identifier for Google Gemini fallback (default: gemini-2.5-flash) |
 
 ---
 
@@ -144,12 +144,12 @@ The following pre-configured demo user accounts are seeded and tested:
 ## 7. Operational Verification & Testing
 
 ### Backend Test Suite
-Run the 98-test regression suite covering authentication, RBAC, ingestion, rate cards, and reconciliation:
+Run the complete regression and AI fallback test suite:
 ```bash
 cd backend
 python -m pytest tests/ -v
 ```
-**Expected Result:** `98 passed, 0 failures`.
+**Expected Result:** `106 passed, 1 skipped` (the real API call test is skipped when `GEMINI_API_KEY` is not provided, with 14 mocked unit tests fully validating client initialization, PII scrubbing, schema validation, confidence thresholds, error handling, rate limits, and timeouts).
 
 ### Frontend Build Verification
 Verify production TypeScript compilation:
@@ -167,3 +167,19 @@ npm run build
 - **Upload Size & Row Limits:** Enforced 25 MB max upload limit and 150,000 row limits per statement file.
 - **CSV Formula Injection Sanitization:** Exported CSV files automatically neutralize dangerous spreadsheet formula triggers (`=`, `+`, `-`, `@`) even when preceded by whitespace or control characters, while strictly preserving negative numbers and legitimate currency values.
 - **XLSX Decompression Protection:** Calamine/fastexcel streaming parser handles standard OpenXML workbooks. For production hardening against malicious compression ratios, host container memory quotas (e.g. Docker `mem_limit: 1g`) should be enforced.
+
+
+---
+
+## 9. AI Column Mapping & Data Privacy (Google Gemini)
+
+LeakCheck implements a three-tier column mapping architecture:
+1. **Pass 1 — Exact Dictionary:** Instant deterministic matching against known canonical aliases (O(1)).
+2. **Pass 2 — RapidFuzz Similarity:** Token sort and normalized ratio matching (threshold >= 80).
+3. **Pass 3 — Google Gemini Semantic Fallback:** Invokes Google Gemini 2.5 Flash via the official `google-genai` SDK (`gemini-2.5-flash`) exclusively for remaining unresolved fields.
+
+### Privacy, PII Scrubbing & Security
+- **Strict Pre-LLM Sanitization:** `sanitize_columns_and_samples` drops all known customer PII fields (customer names, recipient details, addresses) and scrubs phone numbers (`+91...`), email addresses, and payment card numbers from cell samples before payload dispatch.
+- **Strict Structured Outputs:** Uses Pydantic schema validation (`AIColumnMappingResponse`) to enforce strict type constraints and disallow hallucinated canonical fields.
+- **Confidence Scoring & Approval:** Suggestions with confidence < 0.60 are rejected. Suggestions between 0.60 and 0.80 are marked with `uncertain: True` ("AI Review Required"). All AI suggestions require mandatory human approval by a Finance Executive or Co-founder before staging or committing.
+- **Free-Tier Data Handling Notice:** Google Gemini's free tier terms may permit data usage for model improvements. Production environments handling sensitive financial records should configure a paid/enterprise Google Cloud Gemini API key with enterprise privacy terms, or operate purely using deterministic Pass 1 & Pass 2 matching.

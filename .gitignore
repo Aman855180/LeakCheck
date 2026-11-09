@@ -54,3 +54,7 @@ dist-ssr/
 *.swp
 *.swo
 .DS_Store
+
+# Local scratch & test data
+scratch/
+test_data/

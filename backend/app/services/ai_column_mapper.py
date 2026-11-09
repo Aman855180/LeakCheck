@@ -3,7 +3,10 @@ import json
 import logging
 from typing import Dict, List, Any, Optional, Tuple
 from pydantic import BaseModel, Field, ValidationError
-import anthropic
+
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError, ClientError, ServerError
 
 from app.core.config import settings
 from app.services.file_parser import PII_REGEX
@@ -75,8 +78,8 @@ def sanitize_columns_and_samples(
 
 class AIFallbackMapper:
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        self.api_key = api_key or settings.ANTHROPIC_API_KEY
-        self.model = model or settings.ANTHROPIC_MODEL
+        self.api_key = api_key or settings.GEMINI_API_KEY
+        self.model = model or settings.GEMINI_MODEL or "gemini-2.5-flash"
 
     def predict_unresolved_mappings(
         self,
@@ -86,14 +89,14 @@ class AIFallbackMapper:
         source_type: Optional[str] = None
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Invokes Anthropic Claude to predict mappings ONLY for unresolved canonical fields
+        Invokes Google Gemini to predict mappings ONLY for unresolved canonical fields
         against unallocated, sanitized source columns.
         Returns:
-          { canonical_field: { "column": str, "confidence": float, "match_type": "AI_SUGGESTED", "reasoning": str } }
+          { canonical_field: { "column": str, "confidence": float, "match_type": "AI_SUGGESTED", "uncertain": bool, "reasoning": str } }
         """
         # If no API key configured, gracefully fallback without error
         if not self.api_key:
-            logger.info("No ANTHROPIC_API_KEY configured. Skipping AI column mapping fallback.")
+            logger.info("No GEMINI_API_KEY configured. Skipping AI column mapping fallback.")
             return {}
 
         if not unresolved_canonical_fields or not unallocated_source_columns:
@@ -107,7 +110,7 @@ class AIFallbackMapper:
         if not safe_columns:
             return {}
 
-        # 2. Build structured prompt for Claude
+        # 2. Build structured prompt for Gemini
         system_prompt = (
             "You are a specialized e-commerce financial reconciliation schema mapper for the Indian D2C domain.\n"
             "Your task is to map ambiguous or non-standard source file columns to unresolved canonical fields.\n"
@@ -148,19 +151,25 @@ class AIFallbackMapper:
         )
 
         try:
-            client = anthropic.Anthropic(api_key=self.api_key, timeout=10.0)
-            message = client.messages.create(
-                model=self.model,
-                max_tokens=1000,
-                temperature=0.0,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
+            # Initialize official Google GenAI Client with 15s timeout
+            client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=15000)
             )
 
-            response_text = ""
-            for block in message.content:
-                if block.type == "text":
-                    response_text += block.text
+            # Generate structured content with schema enforcement
+            response = client.models.generate_content(
+                model=self.model,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    response_schema=AIColumnMappingResponse,
+                    temperature=0.0
+                )
+            )
+
+            response_text = response.text or ""
 
             # Strip markdown code blocks if present
             cleaned_text = response_text.strip()
@@ -180,17 +189,17 @@ class AIFallbackMapper:
             for item in sorted_items:
                 # Must be in requested unresolved fields
                 if item.canonical_field not in unresolved_canonical_fields:
-                    logger.warning("AI suggested invalid canonical field '%s'. Rejected.", item.canonical_field)
+                    logger.warning("Gemini suggested invalid canonical field '%s'. Rejected.", item.canonical_field)
                     continue
 
                 # Must be in requested unallocated columns
                 if item.source_column not in safe_columns:
-                    logger.warning("AI suggested invalid source column '%s'. Rejected.", item.source_column)
+                    logger.warning("Gemini suggested invalid source column '%s'. Rejected.", item.source_column)
                     continue
 
                 # Reject low confidence (< 0.60)
                 if item.confidence < 0.60:
-                    logger.info("AI suggested '%s' -> '%s' with low confidence %.2f. Rejected.",
+                    logger.info("Gemini suggested '%s' -> '%s' with low confidence %.2f. Rejected (<0.60).",
                                 item.source_column, item.canonical_field, item.confidence)
                     continue
 
@@ -203,28 +212,36 @@ class AIFallbackMapper:
                 if item.canonical_field in results:
                     continue
 
+                # Flag uncertainty if confidence < 0.80
+                is_uncertain = bool(item.confidence < 0.80)
+
                 results[item.canonical_field] = {
                     "column": item.source_column,
                     "confidence": round(float(item.confidence), 2),
                     "match_type": "AI_SUGGESTED",
+                    "uncertain": is_uncertain,
                     "reasoning": item.reasoning
                 }
                 allocated_source_cols.add(item.source_column)
 
             return results
 
-        except anthropic.APIConnectionError as e:
-            logger.warning("Anthropic connection failed: %s. Falling back to deterministic matching.", e)
-            return {}
-        except anthropic.RateLimitError as e:
-            logger.warning("Anthropic rate limit exceeded: %s. Falling back to deterministic matching.", e)
-            return {}
-        except anthropic.APIStatusError as e:
-            logger.warning("Anthropic API error HTTP %s: %s. Falling back to deterministic matching.", e.status_code, e.message)
+        except APIError as e:
+            if getattr(e, "code", None) == 429:
+                logger.warning("Gemini API rate limit exceeded (HTTP 429). Falling back to deterministic matching.")
+            elif getattr(e, "code", None) in (400, 401, 403):
+                logger.warning("Gemini API authentication/permission error (HTTP %s). Falling back.", getattr(e, "code", None))
+            else:
+                logger.warning("Gemini API error (HTTP %s). Falling back to deterministic matching.", getattr(e, "code", None))
             return {}
         except (ValidationError, json.JSONDecodeError) as e:
-            logger.warning("Invalid structured JSON output from LLM: %s. Falling back to deterministic matching.", e)
+            logger.warning("Invalid structured JSON output from Gemini: %s. Falling back to deterministic matching.", e)
             return {}
         except Exception as e:
-            logger.warning("Unexpected error during AI column mapping: %s. Falling back.", e)
+            # Check for timeout or connection errors
+            err_str = str(e).lower()
+            if "timeout" in err_str or "timed out" in err_str:
+                logger.warning("Gemini API request timed out. Falling back to deterministic matching.")
+            else:
+                logger.warning("Unexpected error during Gemini AI column mapping: %s. Falling back.", type(e).__name__)
             return {}

@@ -1,6 +1,6 @@
 # LeakCheck — Intelligent Payment Reconciliation & Financial Leakage Detection
 
-[![Tests](https://img.shields.io/badge/pytest-94%20passed-brightgreen.svg)](backend/tests)
+[![Tests](https://img.shields.io/badge/pytest-106%20passed-brightgreen.svg)](backend/tests)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](backend)
 [![React](https://img.shields.io/badge/react-18.3-blue.svg)](frontend)
 [![TypeScript](https://img.shields.io/badge/typescript-5.5-blue.svg)](frontend)
@@ -41,7 +41,7 @@ LeakCheck matches transactions deterministically against contractually calibrate
 - **Reconciliation Engine:** Pure in-memory vectorized calculations using high-precision `Decimal` arithmetic.
 - **Frontend:** React 18, TypeScript, Vite 5, Tailwind CSS, TanStack Table & Lucide Icons.
 - **Database:** PostgreSQL 16+ with ACID advisory locks, partial indexes, and window analytics.
-- **Column Mapping:** RapidFuzz token matching + Anthropic Claude 3.5 Sonnet fallback.
+- **Column Mapping:** RapidFuzz token matching + Google Gemini 2.5 Flash fallback.
 
 ---
 
@@ -86,7 +86,7 @@ docker compose up -d --build
 
 ## 5. Verification & Testing
 
-The backend includes a comprehensive 94-test regression suite covering:
+The backend includes a comprehensive 106-test regression suite covering:
 - Ingestion idempotent hashing & quarantine
 - Dynamic column mapping & version approval triggers
 - Rate card fee calculations (marketplace, COD, courier freight tariffs)
@@ -99,7 +99,7 @@ Run the test suite:
 cd backend
 python -m pytest tests/ -v
 ```
-**Result:** `94 passed, 0 failures`.
+**Result:** `106 passed, 1 skipped` (mocked unit tests passing, real API integration test conditionally skipped without API key).
 
 ---
 

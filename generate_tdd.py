@@ -149,7 +149,7 @@ def create_tdd():
         "and strict ledger immutability across five core subsystems:"
     )
     add_bullet("Streams raw partner statements (CSV/XLSX), verifies magic-byte signatures, enforces a 25MB file limit and 150k row limit, computes SHA-256 hashes for deduplication, and sanitizes DPDP Act PII at ingestion.", "1. Streaming Ingestion & Normalization")
-    add_bullet("Resolves disparate partner column headers via a 3-pass hierarchy: exact dictionary matching, RapidFuzz string metrics, and pre-LLM PII sanitized Anthropic Claude 3.5 Sonnet fallback with mandatory human approval.", "2. AI-Assisted Column Mapping")
+    add_bullet("Resolves disparate partner column headers via a 3-pass hierarchy: exact dictionary matching, RapidFuzz string metrics, and pre-LLM PII sanitized Google Gemini 2.5 Flash fallback with mandatory human approval.", "2. AI-Assisted Column Mapping")
     add_bullet("Set-based SQL engine evaluating contractual rate cards, COD remittance SLA aging, courier freight weight tariffs, and non-overlapping risk calculation across 100k orders in ~11 seconds.", "3. Deterministic Reconciliation Engine")
     add_bullet("Compiles dispute evidence packages and generates actionable dispute dockets with strict composite uniqueness constraints and recovery tracking.", "4. Claims & Recovery Hub")
     add_bullet("Role-segregated React 18 single-page application providing executive summaries, multi-facet filtering, evidence timeline drawers, and formula-sanitized CSV exports.", "5. Observability & Executive Interface")
@@ -192,13 +192,14 @@ def create_tdd():
     )
     add_bullet("Matches headers against calibrated partner dictionary aliases (e.g., 'awb_no' -> 'tracking_number'). Zero network latency.", "Pass 1: Exact Dictionary Match")
     add_bullet("Computes token sort ratio and weighted Levenshtein distance (RapidFuzz). Matches headers scoring >= 80% similarity.", "Pass 2: Fuzzy String Matching")
-    add_bullet("Invoked strictly for candidate columns that remain unresolved after Passes 1 and 2. Sends unresolved headers, schema definitions, and 5 representative sanitized values to Anthropic Claude 3.5 Sonnet.", "Pass 3: LLM Semantic Fallback")
+    add_bullet("Invoked strictly for candidate columns that remain unresolved after Passes 1 and 2. Sends unresolved headers, schema definitions, and 5 representative sanitized values to Google Gemini 2.5 Flash via the official `google-genai` SDK with strict JSON schema enforcement.", "Pass 3: LLM Semantic Fallback")
 
     add_h2("5.1 Uncertainty Thresholds & Human-in-the-Loop Governance")
     add_bullet("Predictions with confidence scores below 0.80 are explicitly flagged as uncertain in the review interface. Predictions below 0.60 are rejected.", "Uncertainty Thresholds")
     add_bullet("Regex patterns scrub phone numbers, email addresses, and payment card numbers (`[REDACTED_PII]`). PII candidate columns are purged prior to calling the LLM.", "Pre-LLM PII Minimization")
     add_bullet("AI-suggested mappings are NEVER automatically applied to financial ingestion. They are presented in the UI with an `AI_SUGGESTED` badge for mandatory review and explicit approval by a Finance Executive or Co-founder.", "Mandatory Human Approval")
     add_bullet("Once approved, an immutable version is recorded in `column_mappings`. Future uploads of identical format ingest automatically, while schema changes trigger a new version approval.", "Idempotency & Versioning")
+    add_bullet("Pydantic schema validation (`AIColumnMappingResponse`) enforces output formatting and rejects hallucinated target fields. Production environments handling sensitive customer financial records should note that Gemini free-tier terms allow data retention for model improvements; enterprise deployments should utilize dedicated enterprise Google Cloud Gemini projects or rely solely on deterministic Passes 1 & 2.", "Structured Schema & Privacy Governance")
 
     # --- 6. Security & Hardening ---
     add_h1("6. Enterprise Security & Hardening (SEC-01, SEC-02, SEC-03)")
@@ -349,14 +350,10 @@ def create_tdd():
     add_bullet("While Polars comfortably parses 150,000 rows in sub-second timeframes, processing multimillion-row batches will benefit from an asynchronous job worker queue (Celery / ARQ with Redis) to prevent HTTP connection timeouts.", "4. Asynchronous Background Task Queue")
     add_bullet("Courier statements (Delhivery, Blue Dart) and marketplace settlements are currently ingested via CSV/XLSX uploads. Future versions can incorporate direct API integrations and webhooks for real-time daily ledger synchronization.", "5. Direct Carrier & Marketplace Webhook Ingestion")
 
-    # Output paths
-    output_path1 = os.path.abspath(os.path.join(os.path.dirname(__file__), "Technical_Design_Document.docx"))
-    output_path2 = os.path.abspath(os.path.join(os.path.dirname(__file__), "Technical Design Document.docx"))
-    doc.save(output_path1)
-    doc.save(output_path2)
-    print(f"[OK] Technical Design Document successfully generated at:")
-    print(f"     1. {output_path1}")
-    print(f"     2. {output_path2}")
+    # Output path
+    output_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "Technical_Design_Document.docx"))
+    doc.save(output_path)
+    print(f"[OK] Technical Design Document successfully generated at: {output_path}")
 
 if __name__ == "__main__":
     create_tdd()

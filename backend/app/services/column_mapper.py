@@ -205,7 +205,7 @@ def suggest_column_mappings(
                 "match_type": "NONE"
             }
 
-    # Pass 3: AI Fallback (Anthropic LLM) ONLY for fields that remain unresolved
+    # Pass 3: AI Fallback (Google Gemini LLM) ONLY for fields that remain unresolved
     if enable_ai:
         unresolved_fields = {
             k: CANONICAL_FIELDS[k]

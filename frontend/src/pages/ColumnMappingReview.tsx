@@ -293,9 +293,17 @@ export const ColumnMappingReview: React.FC<ColumnMappingReviewProps> = ({
       );
     }
     if (conf.match_type === 'AI_SUGGESTED') {
+      const isUncertain = conf.confidence < 0.80 || (conf as any).uncertain;
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-violet-100 text-violet-800 border border-violet-300">
-          <Sparkles className="w-3 h-3 text-violet-600" /> AI Fallback ({Math.round(conf.confidence * 100)}%)
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border ${
+            isUncertain
+              ? 'bg-amber-100 text-amber-800 border-amber-300'
+              : 'bg-violet-100 text-violet-800 border-violet-300'
+          }`}
+        >
+          <Sparkles className={`w-3 h-3 ${isUncertain ? 'text-amber-600' : 'text-violet-600'}`} />
+          {isUncertain ? 'AI Review Required' : 'AI Suggested'} ({Math.round(conf.confidence * 100)}%)
         </span>
       );
     }
